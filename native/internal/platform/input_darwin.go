@@ -39,13 +39,13 @@ import "fmt"
 
 func initializeNative() {}
 func nativeCapabilities() Capabilities {
-	return Capabilities{bool(C.CGPreflightScreenCaptureAccess()), bool(C.AXIsProcessTrusted())}
+	return Capabilities{bool(C.CGPreflightScreenCaptureAccess()), C.AXIsProcessTrusted() != 0}
 }
 func (n *Native) Input(e InputEvent) error {
 	if e.Type == "releaseAll" {
 		return nil
 	}
-	if !bool(C.AXIsProcessTrusted()) {
+	if C.AXIsProcessTrusted() == 0 {
 		return fmt.Errorf("Accessibility permission is required")
 	}
 	kind, x, y, key, down := 0, e.X, e.Y, 0, 0
