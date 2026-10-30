@@ -21,7 +21,7 @@ Set-Location native
 go build -o bin/remoter-relay.exe ./cmd/remoter-relay
 ```
 
-Generate secrets with `deployment/new-relay-secrets.ps1 -DeviceId office-pc`.
+From the `native` directory, generate secrets with `../deployment/new-relay-secrets.ps1 -DeviceId office-pc`.
 The command prints sensitive JSON; keep it out of shared logs. Assign that JSON
 to the relay process's `REMOTER_RELAY_DEVICES` environment variable, then run:
 
