@@ -1,4 +1,4 @@
-module github.com/remoter/remoter/native
+module github.com/flazedude/Remoter/native
 
 go 1.26.0
 

@@ -5,6 +5,12 @@
   "description": "An open-source remote desktop application powered by Remoter Engine.",
   "license": "Apache-2.0",
   "author": "Remoter contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flazedude/Remoter.git"
+  },
+  "homepage": "https://github.com/flazedude/Remoter#readme",
+  "bugs": "https://github.com/flazedude/Remoter/issues",
   "type": "module",
   "main": "apps/desktop/dist/main.cjs",
   "workspaces": [

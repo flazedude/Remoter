@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/remoter/remoter/native/internal/platform"
+	"github.com/flazedude/Remoter/native/internal/platform"
 )
 
 const testToken = "this-is-a-long-test-token-never-use-in-production"

@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/remoter/remoter/native/internal/platform"
+	"github.com/flazedude/Remoter/native/internal/platform"
 )
 
 const Version = "0.1.0-alpha"

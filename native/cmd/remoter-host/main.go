@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/remoter/remoter/native/internal/host"
-	"github.com/remoter/remoter/native/internal/relay"
+	"github.com/flazedude/Remoter/native/internal/host"
+	"github.com/flazedude/Remoter/native/internal/relay"
 )
 
 func main() {
