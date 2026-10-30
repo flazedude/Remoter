@@ -1,0 +1,17 @@
+node_modules/
+apps/desktop/dist/
+native/bin/
+release/
+test-results/
+.remoter/
+.env
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.DS_Store
+Thumbs.db

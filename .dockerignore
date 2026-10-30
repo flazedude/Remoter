@@ -1,0 +1,11 @@
+.git
+node_modules
+apps
+packages
+test-results
+release
+native/bin
+.env
+.env.*
+**/*.pem
+**/*.key

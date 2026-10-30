@@ -1,0 +1,79 @@
+{
+  "name": "remoter",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "An open-source remote desktop application powered by Remoter Engine.",
+  "license": "Apache-2.0",
+  "author": "Remoter contributors",
+  "type": "module",
+  "main": "apps/desktop/dist/main.cjs",
+  "workspaces": [
+    "apps/desktop",
+    "packages/engine"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx scripts/dev.ts",
+    "preview": "vite --config apps/desktop/vite.config.ts --host 127.0.0.1",
+    "build": "tsx scripts/build.ts",
+    "build:native": "tsx scripts/native.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test packages/engine/test/*.test.ts tests/*.test.ts apps/desktop/src/*.test.ts",
+    "test:desktop": "tsx scripts/smoke-desktop.ts",
+    "test:integration": "tsx scripts/smoke-engine.ts",
+    "test:native": "cd native && go test ./...",
+    "runtime": "tsx scripts/runtime.ts",
+    "package": "npm run build:native && npm run build && npm run runtime && electron-builder --dir",
+    "dist": "npm run build:native && npm run build && npm run runtime && electron-builder"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "45.1.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.64.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.3.0"
+  },
+  "build": {
+    "appId": "org.remoter.desktop",
+    "productName": "Remoter",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "apps/desktop/dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/bin",
+        "to": "native",
+        "filter": [
+          "remoter-host*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Remoter shares your display with devices you explicitly pair.",
+        "NSAccessibilityUsageDescription": "Remoter controls keyboard and mouse only when you enable remote input."
+      }
+    }
+  }
+}

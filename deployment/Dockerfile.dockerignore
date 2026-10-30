@@ -1,0 +1,7 @@
+**
+!native/
+!native/**
+native/bin/
+native/.remoter/
+native/**/*.pem
+native/**/*.key

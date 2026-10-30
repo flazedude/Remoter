@@ -1,0 +1,36 @@
+name: Verify Remoter
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:native
+        env:
+          CGO_ENABLED: 1
+          CGO_CFLAGS: ${{ runner.os == 'macOS' && '-mmacosx-version-min=15.0' || '' }}
+      - run: npm run build:native
+        env:
+          CGO_ENABLED: 1
+          CGO_CFLAGS: ${{ runner.os == 'macOS' && '-mmacosx-version-min=15.0' || '' }}
+      - run: npm run build
+      - run: npm run test:integration
+      - run: npm run test:desktop
+        if: runner.os == 'Windows'

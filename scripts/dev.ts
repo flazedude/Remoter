@@ -1,0 +1,13 @@
+import { createServer } from 'vite';
+import { spawn } from 'node:child_process';
+import { electronPath } from './electron-path.js';
+import { buildMain } from './build.js';
+await buildMain();
+const server = await createServer({ configFile: 'apps/desktop/vite.config.ts' });
+await server.listen();
+server.printUrls();
+const env: NodeJS.ProcessEnv = { ...process.env, REMOTER_DEV_URL: 'http://127.0.0.1:5173' };
+delete env.ELECTRON_RUN_AS_NODE;
+const child = spawn(await electronPath(), ['.'], { stdio: 'inherit', env });
+child.on('exit', async code => { await server.close(); process.exit(code ?? 0); });
+process.on('SIGINT', () => child.kill());

@@ -1,0 +1,5 @@
+{
+  "name": "@remoter/desktop", "version": "0.1.0-alpha.1", "private": true,
+  "type": "module", "license": "Apache-2.0",
+  "dependencies": { "@remoter/engine": "*", "react": "^19.2.0", "react-dom": "^19.2.0", "lucide-react": "^0.468.0" }
+}

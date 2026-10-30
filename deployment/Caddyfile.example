@@ -1,0 +1,5 @@
+{$REMOTER_RELAY_DOMAIN} {
+    # Caddy provisions/renews a public TLS certificate. Native viewers and
+    # hosts verify it normally; inner host TLS stays encrypted through Caddy.
+    reverse_proxy 127.0.0.1:8788
+}

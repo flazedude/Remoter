@@ -1,0 +1,35 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      REMOTER_RELAY_DOMAIN: ${REMOTER_RELAY_DOMAIN:?Set the public relay hostname in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  relay:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    restart: unless-stopped
+    # Share the proxy's network namespace, keeping the unencrypted listener on
+    # loopback. No relay port is exposed publicly or to the Docker bridge.
+    network_mode: service:caddy
+    depends_on:
+      caddy:
+        condition: service_started
+    environment:
+      REMOTER_RELAY_DEVICES: ${REMOTER_RELAY_DEVICES:?Set per-device role credentials in .env}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: ["-listen", "127.0.0.1:8788"]
+
+volumes:
+  caddy_data:
+  caddy_config:

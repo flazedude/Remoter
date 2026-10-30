@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { InputQueue } from '../apps/desktop/electron/input-queue.js';
+import type { RemoteInput } from '../apps/desktop/src/types.js';
+test('release drops queued clicks and motion after a slow request', async () => {
+  const delivered: RemoteInput[] = [];
+  let finish!: () => void;
+  const queue = new InputQueue(async event => { delivered.push(event); if (delivered.length === 1) await new Promise<void>(resolve => { finish = resolve; }); });
+  const first = queue.send({ type: 'key', code: 'KeyA', down: true });
+  const stale = queue.send({ type: 'button', button: 'left', down: true });
+  const pointer = queue.send({ type: 'move', displayId: 0, x: 10, y: 20 });
+  const release = queue.send({ type: 'releaseAll' });
+  finish();
+  await Promise.all([first, stale, pointer, release]);
+  assert.deepEqual(delivered.map(e => e.type), ['key', 'releaseAll']);
+});
+test('pointer coalescing preserves click order and bounds queued work', async () => {
+  const delivered: RemoteInput[] = [];
+  let finish!: () => void;
+  const queue = new InputQueue(async event => { delivered.push(event); if (delivered.length === 1) await new Promise<void>(resolve => { finish = resolve; }); });
+  const promises = [queue.send({ type: 'key', code: 'ShiftLeft', down: true })];
+  for (let x = 0; x < 100; x++) promises.push(queue.send({ type: 'move', displayId: 0, x, y: 0 }));
+  promises.push(queue.send({ type: 'button', button: 'left', down: true }));
+  finish(); await Promise.all(promises);
+  assert.equal(delivered.length, 3);
+  assert.deepEqual(delivered[1], { type: 'move', displayId: 0, x: 99, y: 0 });
+  assert.equal(delivered[2].type, 'button');
+  queue.close();
+  await assert.rejects(queue.send({ type: 'releaseAll' }), /closed/);
+});
