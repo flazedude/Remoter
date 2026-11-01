@@ -57,10 +57,29 @@ export default function App() {
 
   const load = useCallback(async () => {
     setLoading(true); setLoadError('');
-    try { setState(await api.getState()); }
+    try {
+      const next = await api.getState();
+      setState(next);
+      if (next.updateRestoreError) notify(next.updateRestoreError, 'error');
+      const device = next.devices.find(item => item.id === next.restoredDeviceId);
+      if (device) {
+        // A host being updated at the same time may need a moment to return.
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          try {
+            const info = await api.connect(device.id);
+            if (!info.capabilities.capture || !info.displays.length) throw new Error('The host cannot share a display.');
+            setSession({ device, info });
+            lastError = undefined;
+            break;
+          } catch (error) { lastError = error; if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1500)); }
+        }
+        if (lastError) notify(`Could not restore the session: ${errorMessage(lastError)}`, 'error');
+      }
+    }
     catch (error) { setLoadError(errorMessage(error)); }
     finally { setLoading(false); }
-  }, []);
+  }, [notify]);
 
   useEffect(() => { void load(); return () => clearTimeout(noticeTimeout.current); }, [load]);
   useEffect(() => {
@@ -71,7 +90,7 @@ export default function App() {
         const update = await api.getUpdates();
         if (active && update.phase === 'ready' && update.availableVersion !== announcedUpdate.current) {
           announcedUpdate.current = update.availableVersion ?? '';
-          notify(`Remoter ${update.availableVersion} is ready. Open Updates to install when your sessions are finished.`);
+          notify(`Remoter ${update.availableVersion} is ready. Open Updates to install anytime.`);
         }
       } catch { /* The Updates page displays check and download failures. */ }
     }, 2500);
@@ -168,7 +187,7 @@ export default function App() {
             </>}
 
             {page === 'network' && <NetworkPanel network={state.network} onSave={async (settings) => { const next = await api.saveNetwork(settings); setState(next); notify(isBrowserPreview ? 'Preview settings updated. Nothing was saved to your system.' : 'Connection settings saved.'); }} />}
-            {page === 'updates' && <UpdatesPanel sharing={state.hostRunning} />}
+            {page === 'updates' && <UpdatesPanel />}
 
             {page === 'activity' && <>
               <div className="page-heading"><div><h1>Activity</h1></div><span className="quiet-label">Stored on this computer</span></div>
@@ -180,7 +199,7 @@ export default function App() {
     {!session && <footer className="app-footer"><span><span className="footer-route-dot" />{state.network.proxyEnabled ? 'SOCKS5 proxy' : routeNames[state.network.mode]}</span></footer>}
 
     {session && sessionPanel && <Modal title={sessionPanel === 'network' ? 'Options' : 'Updates'} onClose={() => setSessionPanel(null)}><div className="session-settings">
-      {sessionPanel === 'network' ? <NetworkPanel network={state.network} locked onSave={async () => {}} /> : <UpdatesPanel sharing />}
+      {sessionPanel === 'network' ? <NetworkPanel network={state.network} locked onSave={async () => {}} /> : <UpdatesPanel />}
     </div></Modal>}
 
     {notice && <div className={`toast ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={17} /> : <Info size={17} />}<span>{notice.text}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice(null)}><X size={15} /></button></div>}
@@ -195,7 +214,7 @@ export default function App() {
 
 function ArrowUpRightIcon() { return <ArrowRight className="connect-arrow" size={14} />; }
 
-function UpdatesPanel({ sharing }: { sharing: boolean }) {
+function UpdatesPanel() {
   const [state, setState] = useState<UpdateState | null>(null);
   const [error, setError] = useState('');
   const [installing, setInstalling] = useState(false);
@@ -214,12 +233,11 @@ function UpdatesPanel({ sharing }: { sharing: boolean }) {
       {state?.availableVersion && <p className="field-help">Version {state.availableVersion}{state.source ? ` · ${state.source}` : ''}</p>}
       {state?.phase === 'downloading' && <progress aria-label="Update download" value={state.progress ?? 0} max={100} style={{ width: '100%', marginTop: 16 }} />}
       {state?.notes && <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, marginTop: 20 }}>{state.notes}</p>}
-      {sharing && <p className="settings-note"><Info size={14} />Stop sharing before installing an update.</p>}
-      <p className="field-help" style={{ marginTop: 16 }}>New releases download and verify in the background. Installing closes Remoter and opens the setup wizard. Your paired devices and settings are kept.</p>
+      <p className="field-help" style={{ marginTop: 16 }}>Install anytime, including while sharing or controlling a computer. Remoter updates and reopens automatically, then restores sharing and your session. Connections pause briefly during the restart. Your paired devices and settings are kept.</p>
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="settings-actions">
         <button className="button" disabled={!state || busy || installing || state.phase === 'unsupported'} onClick={async () => { setError(''); try { setState(await api.checkUpdates()); } catch (e) { setError(errorMessage(e)); } }}>{busy ? <Spinner /> : <Download size={15} />}Check for updates</button>
-        {state?.phase === 'ready' && <button className="button primary" disabled={sharing || installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>}
+        {state?.phase === 'ready' && <button className="button primary" disabled={installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>}
       </div>
     </section>
   </>;

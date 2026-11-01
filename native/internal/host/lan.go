@@ -46,8 +46,8 @@ func NewLANToken() (string, error) {
 
 // Discovery advertises public identity only. Pairing credentials are retrieved
 // over pinned HTTPS, and only when easy LAN access was enabled by the host.
-func StartDiscovery(name, endpoint, certificate string, easy bool) (func(), error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 45781})
+func StartDiscovery(name, endpoint, certificate string, easy bool, port int) (func(), error) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: port})
 	if err != nil {
 		return nil, err
 	}

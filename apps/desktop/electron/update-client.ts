@@ -163,7 +163,7 @@ export class UpdateManager {
     }
     signal.throwIfAborted();
     this.prepared = { filename, manifest };
-    this.state = { ...this.state, phase: 'ready', progress: 100, message: 'Verified update ready. Install when you are ready to close Remoter.' };
+    this.state = { ...this.state, phase: 'ready', progress: 100, message: 'Verified update ready. Install anytime; Remoter will restart automatically.' };
     return this.snapshot();
   }
   async installer(): Promise<string> {

@@ -1,16 +1,19 @@
 import { _electron as electron, type ElectronApplication } from 'playwright';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { EngineClient, parseInvitation } from '../packages/engine/src/index.js';
+import { EngineClient, parseInvitation, pairLANHost } from '../packages/engine/src/index.js';
 import type { RemoterAPI } from '../apps/desktop/src/types.js';
 import { electronPath } from './electron-path.js';
+import pkg from '../package.json';
+import { testDiscoveryPort } from './test-discovery.js';
 
 // This test never captures a real desktop or injects native input.
 const resultDir = path.resolve('test-results');
 await mkdir(resultDir, { recursive: true });
 const profile = await mkdtemp(path.join(resultDir, 'desktop-profile-'));
 const env: NodeJS.ProcessEnv = { ...process.env, REMOTER_TEST_HIDE: '1', REMOTER_TEST_SYNTHETIC: '1', REMOTER_USER_DATA: profile };
+env.REMOTER_TEST_DISCOVERY_PORT = String(await testDiscoveryPort());
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.REMOTER_DEV_URL;
 let application: ElectronApplication | undefined;
@@ -74,7 +77,18 @@ try {
   await page.screenshot({ path: path.join(resultDir, 'desktop-discovery.png') });
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   invitation = await page.evaluate(async () => (await window.remoter!.startHost({ allowInput: true, allowAudio: true, listen: '127.0.0.1:0', advertise: '' })).invitation);
-  await assert.rejects(page.evaluate(() => window.remoter!.installUpdate()), /Stop sharing and disconnect/);
+  await application.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('remoter:getUpdates');
+    ipcMain.handle('remoter:getUpdates', () => ({ currentVersion: 'test', availableVersion: 'test-next', phase: 'ready', message: 'Synthetic ready state; no executable is provided.' }));
+  });
+  await page.getByRole('button', { name: 'Updates', exact: true }).click();
+  const installButton = page.getByRole('button', { name: 'Install update', exact: true });
+  assert.equal(await installButton.isEnabled(), true, 'Sharing must not disable installation');
+  await installButton.click();
+  await page.getByRole('alert').filter({ hasText: 'Download and verify an update first' }).waitFor();
+  await assert.rejects(page.evaluate(() => window.remoter!.installUpdate()), /Download and verify an update first/);
+  assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, true, 'Unavailable update must leave sharing running');
+  await page.getByRole('button', { name: 'Devices', exact: true }).click();
   await page.getByRole('button', { name: 'Add device', exact: true }).click();
   await page.getByLabel('Device invitation').fill(invitation);
   await page.getByRole('dialog').getByRole('button', { name: 'Add device', exact: true }).click();
@@ -110,6 +124,12 @@ try {
   await page.getByRole('button', { name: 'View only', exact: true }).click();
   await page.getByRole('button', { name: 'Updates', exact: true }).click();
   await page.getByRole('dialog').getByRole('heading', { name: 'App updates', exact: true }).waitFor();
+  assert.equal(await installButton.isEnabled(), true, 'A controlling session must not disable installation');
+  await installButton.click();
+  await page.getByRole('alert').filter({ hasText: 'Download and verify an update first' }).waitFor();
+  await assert.rejects(page.evaluate(() => window.remoter!.installUpdate()), /Download and verify an update first/);
+  assert.equal(await display.count(), 1, 'An unavailable update must leave the session open');
+  assert.equal(await page.getByText('Stop sharing before installing an update.', { exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Disconnect and return to devices' }).count(), 1);
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Options', exact: true }).click();
@@ -155,8 +175,45 @@ try {
   assert.equal(await page.getByRole('switch', { name: 'Dark mode' }).getAttribute('aria-checked'), 'true', 'Theme must survive restart');
   assert.equal(restored.devices.length, 1, 'Encrypted pairing must survive restart');
   assert.equal(restored.hostRunning, false, 'Sharing must not silently restart');
+  // Exercise the real encrypted handoff and startup restoration, without installing
+  // software or capturing the real desktop. Also retain an incoming easy-LAN token.
+  const listen = (lanListen || '127.0.0.1:45780').replace(/:\d+$/, ':0');
+  const hostOptions = { listen, advertise: '', allowInput: false, easyLAN: true, allowAudio: false, allowClipboard: false };
+  const updateInvitation = await page.evaluate(async options => (await window.remoter!.startHost(options)).invitation, hostOptions);
+  const updateHost = parseInvitation(updateInvitation);
+  const lanInvitation = await pairLANHost(updateHost);
+  await page.evaluate(async invitation => window.remoter!.addDevice(invitation), updateInvitation);
+  const updateDevice = (await page.evaluate(() => window.remoter!.getState())).devices[0];
+  const stateFile = path.join(profile, 'devices.encrypted');
+  const disk = (await readFile(stateFile)).toString('base64');
+  const handoff = await application.evaluate(async ({ safeStorage }, data) => {
+    const stored = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(data.disk, 'base64'))).result);
+    stored.updateResume = data.resume;
+    return (await safeStorage.encryptStringAsync(JSON.stringify(stored))).toString('base64');
+  }, { disk, resume: { version: pkg.version, createdAt: Date.now(), host: { ...hostOptions, listen: new URL(updateHost.endpoint).host }, lanToken: lanInvitation.token, deviceId: updateDevice.id } });
+  await application.close(); application = undefined;
+  await writeFile(stateFile, Buffer.from(handoff, 'base64'));
+  application = await electron.launch({ executablePath, args: ['.', '--updated'], cwd: process.cwd(), env: env as Record<string, string> });
+  page = await application.firstWindow();
+  await page.getByRole('img', { name: 'Remote display of Remoter test display' }).waitFor({ timeout: 30000 });
+  const resumed = await page.evaluate(() => window.remoter!.getState());
+  assert.equal(resumed.hostRunning, true);
+  assert.equal(resumed.hostInvitation, updateInvitation, 'Sharing must retain its endpoint and pairing identity');
+  await page.getByRole('button', { name: 'Pause screen updates', exact: true }).click();
+  await page.waitForTimeout(1100); // Let the shared host's 30-FPS budget reset before a second viewer probes it.
+  const incoming = new EngineClient(lanInvitation);
+  try {
+    assert.equal((await incoming.info()).capabilities.input, false, 'Update must retain view-only permission');
+    assert.ok((await incoming.frame()).length > 1024, 'Existing LAN pairing must continue after update');
+  } finally { incoming.close(); }
+  await page.screenshot({ path: path.join(resultDir, 'desktop-update-restored.png') });
+  await application.close(); application = undefined;
+  application = await electron.launch({ executablePath, args: ['.', '--updated'], cwd: process.cwd(), env: env as Record<string, string> });
+  page = await application.firstWindow();
+  await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, false, 'Consumed handoff must not replay');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, pairingRestored: true, encryptedStorage: true, credentialScope: true, errors }));
+  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, pairingRestored: true, encryptedStorage: true, credentialScope: true, updateSessionRestored: true, updateLANAccessRetained: true, updateHandoffConsumed: true, errors }));
 } finally {
   if (application) await application.close();
 }

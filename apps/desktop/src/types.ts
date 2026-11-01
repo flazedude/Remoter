@@ -50,6 +50,8 @@ export interface AppState {
   network: NetworkSettings;
   activity: ActivityItem[];
   hostRunning: boolean;
+  restoredDeviceId?: string;
+  updateRestoreError?: string;
   hostInvitation?: string;
   hostSuggestedEndpoint?: string;
   hostSuggestedListen?: string;

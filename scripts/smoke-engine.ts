@@ -10,6 +10,7 @@ import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EngineClient, parseInvitation, pairLANHost, discoverLAN, type Invitation } from '@remoter/engine';
+import { testDiscoveryPort } from './test-discovery.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extension = process.platform === 'win32' ? '.exe' : '';
@@ -130,6 +131,9 @@ try {
   await mkdir(results, { recursive: true });
   const runDir = await mkdtemp(path.join(results, 'engine-smoke-'));
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+  const discoveryPort = await testDiscoveryPort();
+  cleanEnv.REMOTER_TEST_DISCOVERY_PORT = String(discoveryPort);
+  delete cleanEnv.REMOTER_UPDATE_LAN_TOKEN;
   for (const key of Object.keys(cleanEnv)) if (key.startsWith('REMOTER_RELAY_')) delete cleanEnv[key];
 
   const directHost = launch(hostBinary, ['--synthetic', '--allow-input', '--exit-on-stdin-close', '--listen', '127.0.0.1:0', '--state-dir', path.join(runDir, 'direct'), '--name', 'Synthetic integration host'], cleanEnv);
@@ -152,7 +156,7 @@ try {
       const timer = setTimeout(() => reject(new Error('LAN discovery responder did not reply.')), 2000);
       discovery.once('error', error => { clearTimeout(timer); reject(error); });
       discovery.once('message', bytes => { clearTimeout(timer); try { resolve(JSON.parse(bytes.toString())); } catch { reject(new Error('Invalid LAN discovery response.')); } });
-      discovery.send(Buffer.from(JSON.stringify({ service: 'remoter-discover-v1', nonce })), 45781, '127.0.0.1');
+      discovery.send(Buffer.from(JSON.stringify({ service: 'remoter-discover-v1', nonce })), discoveryPort, '127.0.0.1');
     });
     assert.equal(reply.nonce, nonce); assert.equal(reply.easy, true); assert.equal(reply.certificate, sharingInvitation.certificate);
     assert.equal('token' in reply, false); assert.equal('invitation' in reply, false);
@@ -180,7 +184,7 @@ try {
   if (lanAddress) {
     const lanHost = launch(hostBinary, ['--synthetic', '--discover', '--easy-lan', '--exit-on-stdin-close', '--listen', `${lanAddress}:0`, '--state-dir', path.join(runDir, 'discovery'), '--name', 'LAN discovery integration host'], cleanEnv);
     const lanInvitation = await ready(lanHost);
-    const found = (await discoverLAN()).find(host => host.certificate === lanInvitation.certificate);
+    const found = (await discoverLAN(undefined, discoveryPort)).find(host => host.certificate === lanInvitation.certificate);
     assert.ok(found, 'LAN scan did not discover the synthetic host on this computer’s private interface. Check UDP 45781.');
     assert.equal(found.easy, true);
     const discovered = new EngineClient(await pairLANHost(found)); clients.push(discovered);

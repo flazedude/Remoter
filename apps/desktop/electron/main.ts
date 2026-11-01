@@ -10,10 +10,11 @@ import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, 
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
+import { UpdateInstallation, updateResume, windowsUpdateScript, type HostOptions, type UpdateResume } from './update-installation.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
-interface Store { version: 1; devices: SavedDevice[]; network: NetworkSettings; activity: AppState['activity'] }
+interface Store { version: 1; devices: SavedDevice[]; network: NetworkSettings; activity: AppState['activity']; updateResume?: UpdateResume }
 let store: Store = { version: 1, devices: [], network: { ...defaultNetwork }, activity: [] };
 let window: BrowserWindow | null = null;
 let host: ChildProcess | null = null;
@@ -31,8 +32,12 @@ const inputQueues = new Map<string, InputQueue>();
 let rendererURL = '';
 let updates: UpdateManager;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
-let installingUpdate = false;
-let pendingSessionStarts = 0;
+let installation: UpdateInstallation;
+const pendingSessionStarts = new Set<Promise<unknown>>();
+let hostOptions: HostOptions | undefined;
+let hostLANToken: string | undefined;
+let restoredDeviceId: string | undefined;
+let updateRestoreError: string | undefined;
 
 function text(value: unknown, name: string, max = 2048): string {
   if (typeof value !== 'string' || value.length > max) throw new Error(`Invalid ${name}.`);
@@ -54,7 +59,7 @@ function publicState(): AppState {
   return {
     devices: store.devices.map(({ invitation: _secret, ...device }) => ({ ...device })),
     network: { ...store.network, proxyPassword: '', proxyPasswordSaved: !!store.network.proxyPassword, relayToken: '', relayTokenSaved: !!store.network.relayToken },
-    activity: store.activity.slice(), hostRunning: !!host,
+    activity: store.activity.slice(), hostRunning: !!host, restoredDeviceId, updateRestoreError,
     hostSuggestedListen: suggested, hostSuggestedEndpoint: `https://${suggested}`,
     ...(hostInvitation ? { hostInvitation } : {})
   };
@@ -164,7 +169,7 @@ function hostBinary() {
   const filename = `remoter-host${process.platform === 'win32' ? '.exe' : ''}`;
   return app.isPackaged ? path.join(process.resourcesPath, 'native', filename) : path.join(app.getAppPath(), 'native', 'bin', filename);
 }
-async function startHost(value: unknown): Promise<{ invitation: string }> {
+async function startHost(value: unknown, resumeLANToken?: string): Promise<{ invitation: string }> {
   if (host) throw new Error('Sharing is already running.');
   const options = record(value);
   const listen = text(options.listen, 'listen address', 280).trim();
@@ -183,9 +188,9 @@ async function startHost(value: unknown): Promise<{ invitation: string }> {
   }
   // Synthetic capture is test-only and never toggled by an untrusted renderer.
   if (!app.isPackaged && process.env.REMOTER_TEST_SYNTHETIC === '1') args.push('--synthetic', '--name', 'Remoter test display');
-  const child = spawn(binary, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(binary, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, REMOTER_UPDATE_LAN_TOKEN: resumeLANToken ?? '' } });
   host = child;
-  child.once('exit', () => { if (host === child) { host = null; hostInvitation = undefined; } });
+  child.once('exit', () => { if (host === child) { host = null; hostInvitation = undefined; hostOptions = undefined; hostLANToken = undefined; } });
   return new Promise((resolve, reject) => {
     let output = '', errorOutput = '', settled = false;
     const timeout = setTimeout(() => fail(new Error('Host startup timed out. Check OS capture permissions.')), 20000);
@@ -204,6 +209,9 @@ async function startHost(value: unknown): Promise<{ invitation: string }> {
           if (!settled && message.event === 'ready' && typeof message.invitation === 'string') {
             parseInvitation(message.invitation);
             settled = true; clearTimeout(timeout); hostInvitation = message.invitation;
+            hostLANToken = typeof message.lanToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(message.lanToken) ? message.lanToken : undefined;
+            hostOptions = { listen: typeof message.listen === 'string' ? message.listen : listen, advertise, allowInput: options.allowInput as boolean,
+              discover: options.discover === true, easyLAN: options.easyLAN === true, allowClipboard: options.allowClipboard === true, allowAudio: options.allowAudio === true };
             audit('This computer', options.allowInput ? 'Sharing started with input enabled' : 'View-only sharing started');
             void persist().catch(() => {});
             resolve({ invitation: message.invitation });
@@ -214,7 +222,7 @@ async function startHost(value: unknown): Promise<{ invitation: string }> {
   });
 }
 async function stopHost() {
-  const child = host; host = null; hostInvitation = undefined;
+  const child = host; host = null; hostInvitation = undefined; hostOptions = undefined; hostLANToken = undefined;
   if (!child) return;
   await endHost(child); audit('This computer', 'Sharing stopped'); await persist();
 }
@@ -231,9 +239,10 @@ function registerIPC() {
     ipcMain.handle(`remoter:${name}`, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererURL) throw new Error('Untrusted application frame.');
       if (name === 'connect' || name === 'startHost') {
-        if (installingUpdate) throw new Error('Remoter is closing to install an update.');
-        pendingSessionStarts++;
-        return Promise.resolve().then(() => handler(...args)).finally(() => { pendingSessionStarts--; });
+        if (installation.active) throw new Error('Remoter is restarting to install an update.');
+        const pending = Promise.resolve().then(() => handler(...args)).finally(() => { pendingSessionStarts.delete(pending); });
+        pendingSessionStarts.add(pending);
+        return pending;
       }
       return handler(...args);
     });
@@ -244,19 +253,8 @@ function registerIPC() {
   });
   handle('getState', publicState);
   handle('getUpdates', () => updates.snapshot());
-  handle('checkUpdates', () => updates.check());
-  handle('installUpdate', async () => {
-    if (host || clients.size || pendingSessionStarts) throw new Error('Stop sharing and disconnect remote sessions before installing an update.');
-    if (installingUpdate) throw new Error('The update installer is already starting.');
-    installingUpdate = true;
-    try {
-      const installer = await updates.installer();
-      const child = spawn(installer, [], { detached: true, stdio: 'ignore', windowsHide: false });
-      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      child.unref();
-      setTimeout(() => app.quit(), 200);
-    } catch (error) { installingUpdate = false; throw error; }
-  });
+  handle('checkUpdates', () => installation.active ? updates.snapshot() : updates.check());
+  handle('installUpdate', () => installation.install());
   handle('addDevice', async raw => {
     const invitation = parseInvitation(text(raw, 'invitation', 16384));
     const id = createHash('sha256').update(invitation.certificate).digest('hex').slice(0, 32);
@@ -267,7 +265,8 @@ function registerIPC() {
   });
   handle('discoverLAN', async () => {
     if (store.network.proxyEnabled || store.network.mode !== 'direct') throw new Error('LAN discovery requires Direct mode with SOCKS5 turned off.');
-    discoveryPending ??= discoverLAN().finally(() => { discoveryPending = undefined; });
+    const testPort = !app.isPackaged && process.env.REMOTER_TEST_SYNTHETIC === '1' && process.env.REMOTER_TEST_DISCOVERY_PORT ? Number(process.env.REMOTER_TEST_DISCOVERY_PORT) : undefined;
+    discoveryPending ??= discoverLAN(undefined, testPort).finally(() => { discoveryPending = undefined; });
     const hosts = await discoveryPending;
     discoveredHosts.clear();
     for (const host of hosts) discoveredHosts.set(host.id, host);
@@ -290,7 +289,7 @@ function registerIPC() {
   handle('removeDevice', async raw => { const device = findDevice(raw); await disconnect(device.id); store.devices = store.devices.filter(d => d.id !== device.id); audit(device.name, 'Device removed from this controller'); await persist(); return publicState(); });
   handle('saveNetwork', async raw => { const settings = validateNetwork(raw); updates.setProxyEnabled(settings.proxyEnabled); await disconnectAll(); store.network = settings; audit('This computer', 'Connection settings updated'); await persist(); return publicState(); });
   handle('testDevice', async raw => { const device = findDevice(raw); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); device.status = 'ready'; return info; } catch (error) { device.status = 'offline'; throw error; } finally { client?.close(); } });
-  handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); clients.set(device.id, client); device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client?.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
+  handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); clients.set(device.id, client); restoredDeviceId = undefined; device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client?.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
   handle('audio', async raw => {
     const options = record(raw), id = findDevice(options.deviceId).id, client = clients.get(id);
     if (!client) throw new Error('Start a session first.');
@@ -341,8 +340,8 @@ function registerIPC() {
     if (!queue) { queue = new InputQueue(input => client.input(input)); inputQueues.set(id, queue); }
     return queue.send(event);
   });
-  handle('disconnect', async raw => { await disconnect(findDevice(raw).id); await persist(); return publicState(); });
-  handle('startHost', startHost);
+  handle('disconnect', async raw => { restoredDeviceId = undefined; await disconnect(findDevice(raw).id); await persist(); return publicState(); });
+  handle('startHost', value => startHost(value));
   handle('stopHost', stopHost);
   handle('copy', raw => clipboard.writeText(text(raw, 'clipboard text', 16384)));
 }
@@ -352,6 +351,33 @@ app.whenReady().then(async () => {
   statePath = path.join(app.getPath('userData'), 'devices.encrypted');
   updates = new UpdateManager({ currentVersion: app.getVersion(), cacheDirectory: path.join(app.getPath('userData'), 'updates'), enabled: app.isPackaged && process.platform === 'win32' && process.arch === 'x64' });
   await loadStore();
+  installation = new UpdateInstallation({
+    installer: () => updates.installer(),
+    settleStarts: async () => { await Promise.allSettled([...pendingSessionStarts]); },
+    saveResume: async () => {
+      store.updateResume = { version: updates.snapshot().availableVersion!, createdAt: Date.now(), host: host ? hostOptions : undefined, lanToken: host ? hostLANToken : undefined, deviceId: [...clients.keys()][0] };
+      await persist();
+    },
+    clearResume: async () => { if (store.updateResume) { delete store.updateResume; await persist(); } },
+    launch: async installer => {
+      const script = windowsUpdateScript(process.pid, installer, process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
+      const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      child.unref();
+    },
+    quit: () => { setTimeout(() => app.quit(), 200); }
+  });
+  const resume = updateResume(store.updateResume, app.getVersion(), process.argv);
+  if (store.updateResume) { delete store.updateResume; await persist(); }
+  if (resume) {
+    if (resume.host) {
+      try { await startHost(resume.host, resume.lanToken); }
+      catch { updateRestoreError = 'Sharing could not be restored after the update. Open Devices to start sharing again.'; }
+    }
+    restoredDeviceId = store.devices.some(device => device.id === resume.deviceId) ? resume.deviceId : undefined;
+    if (process.argv.includes('--remoter-update-failed')) updateRestoreError = 'The update installer failed. Your previous version has reopened; try installing again.';
+  }
   if (store.network.proxyEnabled) updates.setProxyEnabled(true);
   const indexPath = path.join(__dirname, 'renderer', 'index.html');
   rendererURL = !app.isPackaged && process.env.REMOTER_DEV_URL === 'http://127.0.0.1:5173' ? `${process.env.REMOTER_DEV_URL}/` : pathToFileURL(indexPath).href;
@@ -370,8 +396,8 @@ app.whenReady().then(async () => {
   window.once('ready-to-show', () => { if (app.isPackaged || process.env.REMOTER_TEST_HIDE !== '1') window?.show(); });
   await window.loadURL(rendererURL);
   if (app.isPackaged && process.platform === 'win32' && process.arch === 'x64') {
-    setTimeout(() => void updates.check(), 10000).unref();
-    updateTimer = setInterval(() => void updates.check(), 30 * 60 * 1000); updateTimer.unref();
+    setTimeout(() => { if (!installation.active) void updates.check(); }, 10000).unref();
+    updateTimer = setInterval(() => { if (!installation.active) void updates.check(); }, 30 * 60 * 1000); updateTimer.unref();
   }
   window.on('closed', () => { window = null; });
 }).catch(error => { console.error('Remoter startup failed:', error instanceof Error ? error.message : 'Unknown error'); app.quit(); });
@@ -383,6 +409,8 @@ app.on('before-quit', event => {
   event.preventDefault(); quitting = true;
   clearInterval(updateTimer);
   Promise.race([disconnectAll(), new Promise(resolve => setTimeout(resolve, 1500))]).finally(async () => {
-    if (host) await endHost(host); host = null; app.quit();
+    if (host) await endHost(host); host = null;
+    await writeQueue.catch(() => {});
+    app.quit();
   });
 });

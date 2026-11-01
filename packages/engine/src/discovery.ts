@@ -21,7 +21,8 @@ export function parseLANHost(bytes: Buffer, nonce: string, source: string): LANH
   } catch { return; }
 }
 
-export function discoverLAN(duration = 2200): Promise<LANHost[]> {
+export function discoverLAN(duration = 2200, port = PORT): Promise<LANHost[]> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.reject(new Error('Invalid discovery port.'));
   return new Promise((resolve, reject) => {
     const nonce = randomBytes(16).toString('hex');
     const hosts = new Map<string, LANHost>();
@@ -42,8 +43,8 @@ export function discoverLAN(duration = 2200): Promise<LANHost[]> {
         if (!sockets.has(socket)) return;
         const parts = iface.address.split('.').map(Number), mask = iface.netmask.split('.').map(Number);
         const broadcast = parts.map((part, i) => part | (~mask[i] & 255)).join('.');
-        socket.send(message, PORT, GROUP, () => {});
-        socket.send(message, PORT, broadcast, () => {});
+        socket.send(message, port, GROUP, () => {});
+        socket.send(message, port, broadcast, () => {});
       };
       socket.bind(0, iface.address, () => {
         try { socket.setBroadcast(true); socket.setMulticastTTL(1); socket.setMulticastInterface(iface.address); send(); timers.push(setTimeout(send, 700)); }

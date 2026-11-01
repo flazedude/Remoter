@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -107,7 +108,7 @@ func run() error {
 	}
 	cfg := host.Config{Name: *name, Token: identity.Token, AllowInput: *allowInput, Synthetic: *synthetic, AllowClipboard: *allowClipboard, AllowAudio: *allowAudio}
 	if *easyLAN {
-		cfg.LANToken, err = host.NewLANToken()
+		cfg.LANToken, err = updateLANToken(os.Getenv("REMOTER_UPDATE_LAN_TOKEN"))
 		if err != nil {
 			return err
 		}
@@ -124,7 +125,14 @@ func run() error {
 	}
 	defer handler.Close()
 	if *discover || *easyLAN {
-		stopDiscovery, err := host.StartDiscovery(*name, endpoint, identity.Certificate, *easyLAN)
+		port := 45781
+		if *synthetic && os.Getenv("REMOTER_TEST_DISCOVERY_PORT") != "" {
+			port, err = strconv.Atoi(os.Getenv("REMOTER_TEST_DISCOVERY_PORT"))
+			if err != nil || port < 1 || port > 65535 {
+				return errors.New("invalid synthetic discovery port")
+			}
+		}
+		stopDiscovery, err := host.StartDiscovery(*name, endpoint, identity.Certificate, *easyLAN, port)
 		if err != nil {
 			return fmt.Errorf("LAN discovery: %w", err)
 		}
@@ -156,7 +164,7 @@ func run() error {
 	fmt.Fprintln(os.Stderr, "Remoter host active ("+mode+"). Stop this process to stop hosting. Pairing grants access; share invitations privately.")
 	// The parent desktop app consumes this one structured secret-bearing line.
 	// No request logs or diagnostics contain the invitation/token.
-	if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"event": "ready", "invitation": invitation, "address": endpoint}); err != nil {
+	if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"event": "ready", "invitation": invitation, "address": endpoint, "listen": listener.Addr().String(), "lanToken": cfg.LANToken}); err != nil {
 		server.Close()
 		return err
 	}
@@ -172,4 +180,16 @@ func run() error {
 		}
 		return err
 	}
+}
+
+// The desktop's one-use encrypted update handoff preserves existing LAN sessions.
+// An ordinary stop/start has no handoff and always revokes the previous token.
+func updateLANToken(resume string) (string, error) {
+	if resume == "" {
+		return host.NewLANToken()
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(resume) {
+		return "", errors.New("invalid update LAN token")
+	}
+	return resume, nil
 }
