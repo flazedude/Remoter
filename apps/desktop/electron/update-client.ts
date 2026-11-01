@@ -135,7 +135,8 @@ export class UpdateManager {
     const selected = selectRelease(candidates, this.options.currentVersion);
     if (!selected.length) { this.state = { currentVersion: this.options.currentVersion, phase: 'current', message: failures ? `Up to date on reachable feeds. ${failures} source(s) unavailable; try again later.` : 'Remoter is up to date.', checkedAt: new Date().toISOString() }; return this.snapshot(); }
     const manifest = selected[0].manifest;
-    this.state = { ...this.state, availableVersion: manifest.version, notes: manifest.notes, checkedAt: new Date().toISOString(), phase: 'downloading', progress: 0, message: 'Downloading a signed update…' };
+    this.prepared = undefined;
+    this.state = { ...this.state, availableVersion: manifest.version, notes: manifest.notes, checkedAt: new Date().toISOString(), phase: 'verifying', progress: 0, downloadedBytes: 0, totalBytes: manifest.installer.size, message: 'Checking for a verified download…' };
     await mkdir(this.options.cacheDirectory, { recursive: true });
     const filename = path.join(this.options.cacheDirectory, manifest.installer.name);
     try { await verifyInstaller(filename, manifest); }
@@ -143,7 +144,7 @@ export class UpdateManager {
       let downloaded = false;
       for (const candidate of selected) {
         const temporary = `${filename}.partial`;
-        this.state = { ...this.state, source: candidate.source, progress: 0 };
+        this.state = { ...this.state, source: candidate.source, phase: 'downloading', progress: 0, downloadedBytes: 0, message: 'Downloading a signed update…' };
         try {
           const response = await request(candidate.url, AbortSignal.any([signal, AbortSignal.timeout(10 * 60 * 1000)]));
           if (!response.body) throw new Error('Empty update download.');
@@ -152,9 +153,10 @@ export class UpdateManager {
           try {
             for await (const chunk of responseChunks(response)) {
               size += chunk.length; if (size > manifest.installer.size) throw new Error('Installer exceeds its signed size.');
-              await output.writeFile(chunk); this.state.progress = Math.round(size * 100 / manifest.installer.size);
+              await output.writeFile(chunk); this.state.progress = Math.floor(size * 100 / manifest.installer.size); this.state.downloadedBytes = size;
             }
           } finally { await output.close(); }
+          this.state = { ...this.state, phase: 'verifying', message: 'Download complete. Verifying the installer…' };
           await verifyInstaller(temporary, manifest);
           await rename(temporary, filename); downloaded = true; break;
         } catch { await rm(temporary, { force: true }); signal.throwIfAborted(); }
@@ -163,7 +165,7 @@ export class UpdateManager {
     }
     signal.throwIfAborted();
     this.prepared = { filename, manifest };
-    this.state = { ...this.state, phase: 'ready', progress: 100, message: 'Verified update ready. Install anytime; Remoter will restart automatically.' };
+    this.state = { ...this.state, phase: 'ready', progress: 100, downloadedBytes: manifest.installer.size, message: 'Verified update ready. Install anytime; Remoter will restart automatically.' };
     return this.snapshot();
   }
   async installer(): Promise<string> {

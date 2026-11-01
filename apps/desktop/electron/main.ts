@@ -10,9 +10,10 @@ import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, 
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
-import { UpdateInstallation, updateResume, windowsUpdateScript, type HostOptions, type UpdateResume } from './update-installation.js';
+import { UpdateInstallation, updateResume, launchWindowsUpdate, type HostOptions, type UpdateResume } from './update-installation.js';
 import { setStartup, startupSharing, type StartupStore } from './startup.js';
 import { assertHostPermissions, hostPermissions, permissionSettingsURL } from './host-permissions.js';
+import { connectionError } from './connection-errors.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
@@ -262,13 +263,20 @@ function registerIPC() {
   function handle(name: string, handler: (...args: unknown[]) => unknown) {
     ipcMain.handle(`remoter:${name}`, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererURL) throw new Error('Untrusted application frame.');
+      const invoke = async () => {
+        try { return await handler(...args); }
+        catch (error) {
+          if (['connect', 'testDevice', 'addLANDevice', 'discoverLAN', 'frame', 'input', 'audio', 'clipboardSync'].includes(name)) throw connectionError(error, process.platform);
+          throw error;
+        }
+      };
       if (name === 'connect' || name === 'startHost') {
         if (installation.active) throw new Error('Remoter is restarting to install an update.');
-        const pending = Promise.resolve().then(() => handler(...args)).finally(() => { pendingSessionStarts.delete(pending); });
+        const pending = Promise.resolve().then(invoke).finally(() => { pendingSessionStarts.delete(pending); });
         pendingSessionStarts.add(pending);
         return pending;
       }
-      return handler(...args);
+      return invoke();
     });
   }
   handle('setTheme', theme => {
@@ -276,6 +284,10 @@ function registerIPC() {
     nativeTheme.themeSource = theme;
   });
   handle('getState', publicState);
+  handle('openLocalNetworkSettings', async () => {
+    if (process.platform !== 'darwin') throw new Error('Local Network settings are available on macOS.');
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork');
+  });
   handle('getHostPermissions', () => {
     if (process.platform !== 'darwin') throw new Error('Mac permissions are available on macOS.');
     return hostPermissions(hostBinary());
@@ -403,13 +415,10 @@ app.whenReady().then(async () => {
       await persist();
     },
     clearResume: async () => { if (store.updateResume) { delete store.updateResume; await persist(); } },
-    launch: async installer => {
-      const script = windowsUpdateScript(process.pid, installer, process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
-      const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-      const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
-      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      child.unref();
-    },
+    launch: installer => launchWindowsUpdate(process.pid, installer, process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, {
+      portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+      logFile: path.join(app.getPath('userData'), 'updates', 'installation.log')
+    }),
     quit: () => { setTimeout(() => app.quit(), 200); }
   });
   const resume = updateResume(store.updateResume, app.getVersion(), process.argv);

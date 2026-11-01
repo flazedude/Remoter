@@ -35,12 +35,14 @@ export interface ActivityItem {
 }
 
 export interface UpdateState {
-  phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error' | 'unsupported';
+  phase: 'idle' | 'checking' | 'downloading' | 'verifying' | 'ready' | 'current' | 'error' | 'unsupported';
   currentVersion: string;
   availableVersion?: string;
   source?: string;
   notes?: string;
   progress?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
   checkedAt?: string;
   message: string;
 }
@@ -87,6 +89,7 @@ export type RemoteInput =
   | { type: 'releaseAll' };
 
 export interface RemoterAPI {
+  openLocalNetworkSettings(): Promise<void>;
   getHostPermissions(): Promise<HostPermissions>;
   requestHostPermission(permission: 'screen' | 'input'): Promise<HostPermissions>;
   setTheme(theme: 'light' | 'dark'): Promise<void>;

@@ -1,6 +1,6 @@
 {
   "name": "remoter",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.7",
   "private": true,
   "description": "An open-source remote desktop application powered by Remoter Engine.",
   "license": "Apache-2.0",
@@ -50,6 +50,7 @@
     "vite": "^7.3.0"
   },
   "build": {
+    "afterPack": "scripts/macos-identity.cjs",
     "appId": "org.remoter.desktop",
     "productName": "Remoter",
     "electronDist": "node_modules/electron/dist",
@@ -94,6 +95,7 @@
       ],
       "category": "public.app-category.utilities",
       "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Remoter finds and connects to computers you choose on your local network for remote desktop access.",
         "NSScreenCaptureUsageDescription": "Remoter shares your display with devices you explicitly pair.",
         "NSAccessibilityUsageDescription": "Remoter controls keyboard and mouse only when you enable remote input."
       }

@@ -20,6 +20,24 @@ npm run dev
 The native build explicitly targets macOS 15, including runtime/cgo, rather
 than inheriting the build computer's newer OS minimum.
 
+## Connect to computers on the LAN
+
+Allow **Remoter** in System Settings → Privacy & Security → **Local Network**.
+This permission is separate from Screen Recording and Accessibility, and is
+needed when this Mac controls another computer too. **Add device** includes an
+**Open Local Network settings** button. After changing access, quit and reopen
+Remoter and scan again. Unreachable errors also advise checking the other
+computer's sharing state, current address, and firewall; they do not prove a
+privacy denial by themselves.
+
+The Mac package declares its Local Network usage and rewrites the main
+executable's build UUID before signing, deriving a distinct identity from the
+app, version, architecture, and bundled payload. Stock Electron's UUID can be
+shared by unrelated apps and confuse macOS Local Network privacy (Apple
+TN3178/TN3179). The packaged smoke check verifies both the usage description
+and that Remoter's UUID differs from the cached Electron runtime. This does
+not enable access automatically or change any other app's permissions.
+
 ## Share this Mac
 
 1. Open **Set up sharing** and review **Mac permissions**.

@@ -205,7 +205,7 @@ export default function App() {
 
     {notice && <div className={`toast ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={17} /> : <Info size={17} />}<span>{notice.text}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice(null)}><X size={15} /></button></div>}
 
-    {showAdd && <AddDeviceModal onClose={() => setShowAdd(false)} onLAN={async (id) => { const result = await api.addLANDevice(id); setState(result.state); setShowAdd(false); await connect(result.state.devices.find(device => device.id === result.deviceId)!); }} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added.'); }} />}
+    {showAdd && <AddDeviceModal platform={state.platform} onClose={() => setShowAdd(false)} onLAN={async (id) => { const result = await api.addLANDevice(id); setState(result.state); setShowAdd(false); await connect(result.state.devices.find(device => device.id === result.deviceId)!); }} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added.'); }} />}
     {removeDevice && <Modal title="Remove device?" onClose={() => !busy && setRemoveDevice(null)} busy={!!busy}>
       <p className="modal-description"><strong>{removeDevice.name}</strong> will be removed. Its host will keep running.</p>
       <div className="modal-actions"><button className="button" disabled={!!busy} onClick={() => setRemoveDevice(null)}>Cancel</button><button className="button danger" disabled={!!busy} onClick={async () => { setBusy('remove'); try { setState(await api.removeDevice(removeDevice.id)); setRemoveDevice(null); notify('Device removed.'); } catch (error) { notify(errorMessage(error), 'error'); } finally { setBusy(''); } }}>{busy === 'remove' ? <Spinner /> : <Trash2 size={15} />}Remove device</button></div>
@@ -225,20 +225,26 @@ function UpdatesPanel() {
     void refresh(); const timer = setInterval(() => void refresh(), 1000);
     return () => { active = false; clearInterval(timer); };
   }, []);
-  const busy = state?.phase === 'checking' || state?.phase === 'downloading';
+  const busy = state?.phase === 'checking' || state?.phase === 'downloading' || state?.phase === 'verifying';
+  const downloadVisible = state?.availableVersion && ['downloading', 'verifying', 'ready'].includes(state.phase);
+  const megabytes = (bytes: number) => `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return <>
     <div className="page-heading"><div><h1>App updates</h1></div></div>
     <section className="settings-section" aria-label="App updates">
       <div className="settings-heading"><h2>Remoter {state?.currentVersion ?? ''}</h2><p>Checks Jack PC, GPD PC, and GitHub. Matching LAN downloads are preferred.</p></div>
-      <p role="status">{state?.message ?? 'Loading update status…'}</p>
+      <p role="status">{installing ? 'Starting the installer… Remoter will restart when it is ready.' : state?.message ?? 'Loading update status…'}</p>
       {state?.availableVersion && <p className="field-help">Version {state.availableVersion}{state.source ? ` · ${state.source}` : ''}</p>}
-      {state?.phase === 'downloading' && <progress aria-label="Update download" value={state.progress ?? 0} max={100} style={{ width: '100%', marginTop: 16 }} />}
+      {downloadVisible && <div className="update-download">
+        <div className="update-download-label"><span>{state.phase === 'ready' ? 'Download complete' : state.phase === 'verifying' ? 'Verifying download…' : 'Downloading update…'}</span><span>{state.progress ?? 0}%</span></div>
+        <progress aria-label="Update download" value={state.progress ?? 0} max={100} />
+        {state.totalBytes !== undefined && <p className="field-help">{megabytes(state.downloadedBytes ?? 0)} of {megabytes(state.totalBytes)}</p>}
+      </div>}
       {state?.notes && <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, marginTop: 20 }}>{state.notes}</p>}
       <p className="field-help" style={{ marginTop: 16 }}>Install anytime, including while sharing or controlling a computer. Remoter updates and reopens automatically, then restores sharing and your session. Connections pause briefly during the restart. Your paired devices and settings are kept.</p>
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="settings-actions">
         <button className="button" disabled={!state || busy || installing || state.phase === 'unsupported'} onClick={async () => { setError(''); try { setState(await api.checkUpdates()); } catch (e) { setError(errorMessage(e)); } }}>{busy ? <Spinner /> : <Download size={15} />}Check for updates</button>
-        {state?.phase === 'ready' && <button className="button primary" disabled={installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>}
+        <button className="button primary" disabled={state?.phase !== 'ready' || installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>
       </div>
     </section>
   </>;
@@ -250,7 +256,7 @@ function Modal({ title, children, onClose, busy = false }: { title: string; chil
   return <dialog className="modal" ref={ref} aria-labelledby="modal-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (!busy && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); } }}><div className="modal-heading"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="Close dialog" disabled={busy} onClick={onClose}><X size={19} /></button></div>{children}</dialog>;
 }
 
-function AddDeviceModal({ onClose, onAdd, onLAN }: { onClose: () => void; onAdd: (invitation: string) => Promise<void>; onLAN: (id: string) => Promise<void> }) {
+function AddDeviceModal({ platform, onClose, onAdd, onLAN }: { platform?: string; onClose: () => void; onAdd: (invitation: string) => Promise<void>; onLAN: (id: string) => Promise<void> }) {
   const [invitation, setInvitation] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -265,6 +271,10 @@ function AddDeviceModal({ onClose, onAdd, onLAN }: { onClose: () => void; onAdd:
   useEffect(() => { void scan(); }, []);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setError(''); try { await onAdd(invitation.trim()); } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); } }
   return <Modal title="Add a device" onClose={onClose} busy={busy}>
+    {platform === 'darwin' && <div className="local-network-help">
+      <p className="field-help">Allow Remoter in System Settings → Privacy &amp; Security → Local Network to connect to nearby computers. If you change access, quit and reopen Remoter.</p>
+      <button className="button small" disabled={busy} onClick={async () => { try { await api.openLocalNetworkSettings(); } catch (error) { setError(errorMessage(error)); } }}>Open Local Network settings</button>
+    </div>}
     <section className="lan-discovery" aria-label="Nearby computers">
       <div className="lan-discovery-heading"><strong><Wifi size={16} />Nearby computers</strong><button className="button small" disabled={busy || scanning} onClick={() => void scan()}>{scanning ? <Spinner /> : <Search size={14} />}{scanning ? 'Searching…' : 'Scan again'}</button></div>
       <p className="field-help">Start sharing on the other PC. Enable “Easy LAN connections” there for one-click access.</p>
