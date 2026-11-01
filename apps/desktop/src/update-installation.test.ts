@@ -105,7 +105,7 @@ test('launcher waits for helper readiness and keeps the app alive on preflight f
 });
 
 test('the Windows update helper survives the launching app exiting', { skip: process.platform !== 'win32' }, async () => {
-  const folder = await mkdtemp(path.join(os.tmpdir(), 'remoter-helper-lifetime-'));
+  const folder = await mkdtemp(path.join(os.tmpdir(), "remoter 更新's [lifetime]-"));
   const installer = path.join(folder, 'setup.cmd'), executable = path.join(folder, 'app.cmd');
   await writeFile(installer, '@echo off\r\n> "%~dp0installed.txt" echo %*\r\nexit /b 0\r\n');
   await writeFile(executable, '@echo off\r\n> "%~dp0restarted.txt" echo %*\r\n');

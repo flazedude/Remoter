@@ -85,7 +85,8 @@ try {
 export async function launchWindowsUpdate(pid: number, installer: string, executable: string, options: { logFile?: string; portable?: boolean; powershell?: string } = {}): Promise<void> {
   const helperPath = path.join(path.dirname(installer), `.remoter-update-${randomUUID()}.ps1`);
   const readyFile = `${helperPath}.ready`;
-  await writeFile(helperPath, windowsUpdateScript(pid, installer, executable, { ...options, readyFile }), { mode: 0o600 });
+  // Windows PowerShell 5.1 needs the BOM to read non-ASCII Windows paths.
+  await writeFile(helperPath, '\uFEFF' + windowsUpdateScript(pid, installer, executable, { ...options, readyFile }), { mode: 0o600 });
   const powershell = options.powershell ?? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
   // Start-Process gives PowerShell its own hidden console. DETACHED_PROCESS
