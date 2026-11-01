@@ -29,6 +29,8 @@ npm run dev
 
 The Electron window is the functioning application. `npm run preview` opens only the UI development server at `http://127.0.0.1:5173`; native operations are explicitly unavailable there.
 
+For Mac packaging, permission setup, and verification, see [macOS setup](docs/macos.md).
+
 ### Connect two computers
 
 1. Build or install Remoter on both machines.
@@ -93,7 +95,7 @@ npm run package
 ## Current boundaries
 
 - The host operates in the current logged-in user session. It does not install a boot service, bypass Windows UAC, or unlock FileVault preboot.
-- macOS needs Screen Recording and Accessibility approval. Native macOS behavior must be verified on Mac hardware.
+- macOS sharing includes Screen Recording and Accessibility setup with native permission checks. Screen access is required for sharing; Accessibility is required for remote input. Interactive capture/input behavior still needs real-device validation.
 - JPEG polling is the first transport baseline, not a high-frame-rate video codec.
 - Pairing is per device, with a revocable device token. Central accounts, MFA, per-operator capabilities, short-lived grants, and fleet policies are planned.
 - Concurrent controllers of one host share input state; use one controlling session per host during the alpha.

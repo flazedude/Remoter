@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 const invoke = (name: string, ...args: unknown[]) => ipcRenderer.invoke(`remoter:${name}`, ...args);
 contextBridge.exposeInMainWorld('remoter', {
+  getHostPermissions: () => invoke('getHostPermissions'),
+  requestHostPermission: (permission: 'screen' | 'input') => invoke('requestHostPermission', permission),
   setTheme: (theme: 'light' | 'dark') => invoke('setTheme', theme),
   getUpdates: () => invoke('getUpdates'),
   checkUpdates: () => invoke('checkUpdates'),

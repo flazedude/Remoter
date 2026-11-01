@@ -33,4 +33,7 @@ jobs:
       - run: npm run build
       - run: npm run test:integration
       - run: npm run test:desktop
-        if: runner.os == 'Windows'
+      - run: npm run package
+        if: runner.os == 'macOS'
+      - run: npm run test:package
+        if: runner.os == 'macOS'

@@ -46,6 +46,7 @@ export interface UpdateState {
 }
 
 export interface AppState {
+  platform?: string;
   devices: Device[];
   network: NetworkSettings;
   activity: ActivityItem[];
@@ -86,6 +87,8 @@ export type RemoteInput =
   | { type: 'releaseAll' };
 
 export interface RemoterAPI {
+  getHostPermissions(): Promise<HostPermissions>;
+  requestHostPermission(permission: 'screen' | 'input'): Promise<HostPermissions>;
   setTheme(theme: 'light' | 'dark'): Promise<void>;
   getUpdates(): Promise<UpdateState>;
   checkUpdates(): Promise<UpdateState>;
@@ -108,6 +111,8 @@ export interface RemoterAPI {
   stopHost(): Promise<void>;
   copy(text: string): Promise<void>;
 }
+
+export interface HostPermissions { screen: boolean; input: boolean }
 
 declare global {
   interface Window {

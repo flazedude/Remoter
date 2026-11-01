@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/flazedude/Remoter/native/internal/host"
+	"github.com/flazedude/Remoter/native/internal/platform"
 	"github.com/flazedude/Remoter/native/internal/relay"
 )
 
@@ -49,7 +50,17 @@ func run() error {
 	synthetic := flag.Bool("synthetic", false, "use generated frames and simulated input; never access the real desktop")
 	rotate := flag.Bool("rotate-token", false, "invalidate existing pairing tokens before starting")
 	exitOnStdinClose := flag.Bool("exit-on-stdin-close", false, "stop gracefully when the launching desktop app closes stdin")
+	checkPermissions := flag.Bool("check-permissions", false, "report native capture/input permissions as JSON, then exit without starting a host")
+	requestPermission := flag.String("request-permission", "", "request macOS screen or input permission, then report permissions and exit")
 	flag.Parse()
+	if *checkPermissions || *requestPermission != "" {
+		if *requestPermission != "" {
+			if err := platform.RequestPermission(*requestPermission); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(platform.NewNative().Capabilities())
+	}
 	if len(*name) == 0 || len(*name) > 120 || regexp.MustCompile(`[\x00-\x1f\x7f]`).MatchString(*name) {
 		return errors.New("device name must contain 1 to 120 characters without control characters")
 	}

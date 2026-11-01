@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test packages/engine/test/*.test.ts tests/*.test.ts apps/desktop/src/*.test.ts",
     "test:desktop": "tsx scripts/smoke-desktop.ts",
+    "test:package": "tsx scripts/smoke-package.ts",
     "test:integration": "tsx scripts/smoke-engine.ts",
     "test:native": "cd native && go test ./...",
     "runtime": "tsx scripts/runtime.ts",
@@ -87,6 +88,7 @@
       "artifactName": "Remoter-Portable-${version}-${arch}.${ext}"
     },
     "mac": {
+      "minimumSystemVersion": "15.0",
       "target": [
         "dmg"
       ],

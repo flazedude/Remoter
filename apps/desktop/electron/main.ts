@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, safeStorage, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, safeStorage, shell, Tray } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -12,6 +12,7 @@ import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
 import { UpdateInstallation, updateResume, windowsUpdateScript, type HostOptions, type UpdateResume } from './update-installation.js';
 import { setStartup, startupSharing, type StartupStore } from './startup.js';
+import { assertHostPermissions, hostPermissions, permissionSettingsURL } from './host-permissions.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
@@ -71,6 +72,7 @@ function publicState(): AppState {
   const tailnet = addresses.find(ip => { const parts = ip.split('.').map(Number); return parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127; });
   const suggested = `${lan || tailnet || '127.0.0.1'}:45780`;
   return {
+    platform: process.platform,
     devices: store.devices.map(({ invitation: _secret, ...device }) => ({ ...device })),
     network: { ...store.network, proxyPassword: '', proxyPasswordSaved: !!store.network.proxyPassword, relayToken: '', relayTokenSaved: !!store.network.relayToken },
     activity: store.activity.slice(), hostRunning: !!host, restoredDeviceId, updateRestoreError,
@@ -194,6 +196,11 @@ async function startHost(value: unknown, resumeLANToken?: string): Promise<{ inv
   if (advertise && new URL(advertise).protocol !== 'https:') throw new Error('The advertised address must use https://.');
   const binary = hostBinary();
   if (!existsSync(binary)) throw new Error('Build the native host first: npm run build:native');
+  if (process.platform === 'darwin' && (app.isPackaged || process.env.REMOTER_TEST_SYNTHETIC !== '1')) {
+    if (options.allowAudio || options.allowClipboard) throw new Error('Clipboard and system audio hosting currently require Windows.');
+    assertHostPermissions(await hostPermissions(binary), options.allowInput);
+    if (host) throw new Error('Sharing is already running.');
+  }
   const args = ['--listen', listen, '--state-dir', path.join(app.getPath('userData'), 'host'), '--exit-on-stdin-close'];
   if (advertise) args.push('--advertise', advertise);
   if (options.allowInput) args.push('--allow-input');
@@ -269,6 +276,17 @@ function registerIPC() {
     nativeTheme.themeSource = theme;
   });
   handle('getState', publicState);
+  handle('getHostPermissions', () => {
+    if (process.platform !== 'darwin') throw new Error('Mac permissions are available on macOS.');
+    return hostPermissions(hostBinary());
+  });
+  handle('requestHostPermission', async permission => {
+    if (process.platform !== 'darwin') throw new Error('Mac permissions are available on macOS.');
+    const url = permissionSettingsURL(permission);
+    const permissions = await hostPermissions(hostBinary(), permission as 'screen' | 'input');
+    await shell.openExternal(url);
+    return permissions;
+  });
   handle('getUpdates', () => updates.snapshot());
   handle('checkUpdates', () => installation.active ? updates.snapshot() : updates.check());
   handle('installUpdate', () => installation.install());

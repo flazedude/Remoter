@@ -28,6 +28,13 @@
 }
 
 * { box-sizing: border-box; }
+.mac-permissions { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+.mac-permissions h3 { margin: 0 0 8px; font-size: 13px; }
+.mac-permission { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 0; }
+.mac-permission strong { display: block; font-size: 12px; font-weight: 500; }
+.mac-permission span { display: block; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.mac-permissions > button { margin-top: 12px; }
+@media (max-width: 560px) { .mac-permission { align-items: flex-start; flex-direction: column; } }
 body { margin: 0; min-width: 360px; }
 button, input, textarea, select { font: inherit; }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }

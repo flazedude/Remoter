@@ -233,8 +233,12 @@ try {
   try { assert.equal((await bootClient.info()).capabilities.input, false, 'Startup must retain view-only permission'); }
   finally { bootClient.close(); }
   await page.getByRole('button', { name: 'Set up sharing', exact: true }).click();
-  await page.getByLabel('Launch on boot', { exact: true }).waitFor();
-  assert.equal(await page.getByLabel('Launch on boot', { exact: true }).isChecked(), true);
+  if (process.platform === 'darwin') {
+    assert.equal(await page.getByLabel('Launch on boot', { exact: true }).count(), 0);
+  } else {
+    await page.getByLabel('Launch on boot', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('Launch on boot', { exact: true }).isChecked(), true);
+  }
   await page.screenshot({ path: path.join(resultDir, 'desktop-startup.png') });
   await page.getByRole('button', { name: 'Stop sharing', exact: true }).click();
   await page.getByText('Not sharing', { exact: true }).waitFor();
