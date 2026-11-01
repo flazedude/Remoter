@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultQuality, frameDelay, qualityProfiles, StreamResolution } from './stream-settings';
+import { defaultQuality, nextFrameAt, qualityProfiles, StreamResolution } from './stream-settings';
 
 test('LAN headroom defaults only to direct local endpoints without a proxy', () => {
   const direct = { mode: 'direct' as const, proxyEnabled: false };
@@ -16,10 +16,16 @@ test('LAN headroom defaults only to direct local endpoints without a proxy', () 
 });
 
 test('frame pacing includes request time and never queues frames to catch up', () => {
-  assert.equal(frameDelay(30, 10), 24);
-  assert.equal(frameDelay(30, 40), 1);
-  assert.equal(frameDelay(15, 20), 47);
+  assert.equal(nextFrameAt(0, 30, 10) - 10, 24);
+  assert.equal(nextFrameAt(0, 30, 40) - 40, 0);
+  assert.equal(nextFrameAt(0, 15, 20) - 20, 47);
   assert.equal(qualityProfiles.lan.fps, 30);
+});
+
+test('late Windows timers do not accumulate a delay on every frame', () => {
+  assert.equal(nextFrameAt(0, 30, 45), 45, 'capture already behind must request immediately');
+  assert.equal(nextFrameAt(100, 30, 125), 134);
+  assert.equal(nextFrameAt(0, 30, 1000), 1000, 'no burst of queued catch-up frames');
 });
 
 test('smooth LAN backs off sustained slow capture and recovers conservatively', () => {

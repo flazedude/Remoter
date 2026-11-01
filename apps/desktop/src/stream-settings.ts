@@ -20,8 +20,11 @@ export function defaultQuality(endpoint: string, network: Pick<NetworkSettings, 
   } catch { return 'balanced'; }
 }
 
-export function frameDelay(fps: number, elapsed: number): number {
-  return Math.max(1, Math.ceil(1000 / fps) - elapsed);
+// Retain the planned cadence when a timer wakes late, but never queue catch-up
+// frames after capture falls behind. Windows timers can otherwise add ~15 ms
+// to every frame and turn a 30-FPS pipeline into a roughly 20-FPS stream.
+export function nextFrameAt(previous: number, fps: number, now: number): number {
+  return Math.max(previous + Math.ceil(1000 / fps), now);
 }
 
 // Adjust only the smooth LAN preset. Use sustained measurements and different

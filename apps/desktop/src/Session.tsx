@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { ArrowLeft, ChevronDown, Clipboard, Copy, Info, Keyboard, LoaderCircle, Maximize2, Monitor, MousePointer2, Pause, Play, ShieldCheck, Volume2, VolumeX, ClipboardPaste } from 'lucide-react';
 import { api, errorMessage } from './api';
 import { displayPoint } from './geometry';
-import { defaultQuality, frameDelay, qualityProfiles, StreamResolution } from './stream-settings';
+import { defaultQuality, nextFrameAt, qualityProfiles, StreamResolution } from './stream-settings';
 import { useSharing } from './use-sharing';
 import type { Device, HostInfo, NetworkSettings, RemoteInput } from './types';
 
@@ -95,9 +95,10 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     let sampleFrames = 0;
     let resolution = new StreamResolution();
     let previousQuality = config.current.quality;
+    let nextAt = performance.now();
     async function poll() {
       if (!active) return;
-      if (config.current.paused) { sampleStart = performance.now(); sampleFrames = 0; setFps(0); timer = setTimeout(() => void poll(), 200); return; }
+      if (config.current.paused) { sampleStart = performance.now(); nextAt = sampleStart; sampleFrames = 0; setFps(0); timer = setTimeout(() => void poll(), 200); return; }
       const request = config.current;
       const started = performance.now();
       let delay = 1;
@@ -115,14 +116,18 @@ export default function Session({ device, info, network, disconnecting, onDiscon
           const elapsed = performance.now() - sampleStart;
           if (elapsed >= 1000) { setFps(Math.round(sampleFrames * 1000 / elapsed)); sampleStart = performance.now(); sampleFrames = 0; }
         }
-        delay = frameDelay(profile.fps, performance.now() - started);
+        nextAt = nextFrameAt(nextAt, profile.fps, performance.now());
+        delay = Math.max(0, nextAt - performance.now());
       } catch (error) {
         if (active) { setFrameError(errorMessage(error)); stopControl(); }
         delay = 1500;
-        setFps(0); sampleStart = performance.now(); sampleFrames = 0;
+        setFps(0); sampleStart = performance.now(); nextAt = sampleStart + delay; sampleFrames = 0;
       }
       // Exactly one outstanding frame request; slow capture supplies backpressure.
-      if (active) timer = setTimeout(() => void poll(), delay);
+      if (active) {
+        if (delay > 0) timer = setTimeout(() => void poll(), delay);
+        else void poll(); // The completed IPC request already yielded the event loop.
+      }
     }
     void poll();
     return () => { active = false; clearTimeout(timer); };
