@@ -41,6 +41,10 @@ func run() error {
 	stateDir := flag.String("state-dir", filepath.Join(configDir, "Remoter", "host"), "private host identity directory")
 	name := flag.String("name", hostname, "device display name")
 	allowInput := flag.Bool("allow-input", false, "allow remote keyboard and mouse on this desktop")
+	discover := flag.Bool("discover", false, "advertise this host on the local network (UDP 45781)")
+	easyLAN := flag.Bool("easy-lan", false, "allow devices on attached private subnets to pair without an invitation")
+	allowClipboard := flag.Bool("allow-clipboard", false, "allow two-way text clipboard sharing")
+	allowAudio := flag.Bool("allow-audio", false, "allow streaming Windows system playback audio")
 	synthetic := flag.Bool("synthetic", false, "use generated frames and simulated input; never access the real desktop")
 	rotate := flag.Bool("rotate-token", false, "invalidate existing pairing tokens before starting")
 	exitOnStdinClose := flag.Bool("exit-on-stdin-close", false, "stop gracefully when the launching desktop app closes stdin")
@@ -56,11 +60,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler, err := host.NewHandler(host.Config{Name: *name, Token: identity.Token, AllowInput: *allowInput, Synthetic: *synthetic})
-	if err != nil {
-		return err
-	}
-	defer handler.Close()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
@@ -106,6 +105,31 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cfg := host.Config{Name: *name, Token: identity.Token, AllowInput: *allowInput, Synthetic: *synthetic, AllowClipboard: *allowClipboard, AllowAudio: *allowAudio}
+	if *easyLAN {
+		cfg.LANToken, err = host.NewLANToken()
+		if err != nil {
+			return err
+		}
+		lanIdentity := identity
+		lanIdentity.Token = cfg.LANToken
+		cfg.LANInvitation, err = lanIdentity.Invite(*name, endpoint, nil)
+		if err != nil {
+			return err
+		}
+	}
+	handler, err := host.NewHandler(cfg)
+	if err != nil {
+		return err
+	}
+	defer handler.Close()
+	if *discover || *easyLAN {
+		stopDiscovery, err := host.StartDiscovery(*name, endpoint, identity.Certificate, *easyLAN)
+		if err != nil {
+			return fmt.Errorf("LAN discovery: %w", err)
+		}
+		defer stopDiscovery()
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if *exitOnStdinClose {
@@ -116,7 +140,7 @@ func run() error {
 	go func() { errCh <- server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	if relayURL != "" {
 		go func() {
-			err := relay.ServeHost(ctx, relay.HostConfig{URL: relayURL, DeviceID: relayDevice, Token: relayToken, ProxyURL: relayProxy, TLSConfig: tlsConfig, Handler: handler, PoolSize: 4, OnError: func(error) { fmt.Fprintln(os.Stderr, "Relay unavailable; retrying.") }})
+			err := relay.ServeHost(ctx, relay.HostConfig{URL: relayURL, DeviceID: relayDevice, Token: relayToken, ProxyURL: relayProxy, TLSConfig: tlsConfig, Handler: http.HandlerFunc(handler.ServeRelayHTTP), PoolSize: 4, OnError: func(error) { fmt.Fprintln(os.Stderr, "Relay unavailable; retrying.") }})
 			if err != nil && ctx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "Relay stopped; direct host is still running.")
 			}

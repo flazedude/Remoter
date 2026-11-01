@@ -7,7 +7,11 @@ export interface Device {
   addedAt: string;
   lastConnectedAt?: string;
   status?: 'unknown' | 'ready' | 'offline';
+  pairing?: 'lan';
 }
+
+export interface DiscoveredHost { id: string; name: string; endpoint: string; easy: boolean }
+export interface AudioPacket { sequence: number; data: string; sampleRate: number; channels: number }
 
 export interface NetworkSettings {
   mode: ConnectionMode;
@@ -64,7 +68,7 @@ export interface HostInfo {
   name: string;
   os: string;
   version: string;
-  capabilities: { capture: boolean; input: boolean };
+  capabilities: { capture: boolean; input: boolean; clipboard?: boolean; audio?: boolean };
   displays: Display[];
   synthetic?: boolean;
   warning?: string;
@@ -78,19 +82,24 @@ export type RemoteInput =
   | { type: 'releaseAll' };
 
 export interface RemoterAPI {
+  setTheme(theme: 'light' | 'dark'): Promise<void>;
   getUpdates(): Promise<UpdateState>;
   checkUpdates(): Promise<UpdateState>;
   installUpdate(): Promise<void>;
   getState(): Promise<AppState>;
   addDevice(invitation: string): Promise<AppState>;
+  discoverLAN(): Promise<DiscoveredHost[]>;
+  addLANDevice(id: string): Promise<{ state: AppState; deviceId: string }>;
   removeDevice(id: string): Promise<AppState>;
   saveNetwork(settings: NetworkSettings): Promise<AppState>;
   testDevice(id: string): Promise<HostInfo>;
   connect(id: string): Promise<HostInfo>;
   frame(options: { deviceId: string; displayId: number; quality: number; width: number }): Promise<string>;
   input(options: { deviceId: string; event: RemoteInput }): Promise<void>;
+  audio(options: { deviceId: string; after: number }): Promise<AudioPacket>;
+  clipboardSync(options: { deviceId: string; direction: 'send' | 'receive' | 'both' | 'reset' }): Promise<void>;
   disconnect(id: string): Promise<AppState>;
-  startHost(options: { allowInput: boolean; listen: string; advertise: string }): Promise<{ invitation: string }>;
+  startHost(options: { allowInput: boolean; listen: string; advertise: string; discover?: boolean; easyLAN?: boolean; allowClipboard?: boolean; allowAudio?: boolean }): Promise<{ invitation: string }>;
   stopHost(): Promise<void>;
   copy(text: string): Promise<void>;
 }

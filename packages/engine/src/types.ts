@@ -20,10 +20,12 @@ export interface HostInfo {
   name: string;
   os: string;
   version: string;
-  capabilities: { capture: boolean; input: boolean };
+  capabilities: { capture: boolean; input: boolean; clipboard?: boolean; audio?: boolean };
   displays: Display[];
 }
 export interface FrameOptions { display?: number; quality?: number; width?: number }
+export interface AudioPacket { sequence: number; data: string; sampleRate: number; channels: number }
+export interface LANHost { id: string; name: string; endpoint: string; certificate: string; easy: boolean }
 export type InputEvent =
   | { type: 'move'; x: number; y: number; displayId: number }
   | { type: 'button'; button: 'left' | 'right' | 'middle'; down: boolean }

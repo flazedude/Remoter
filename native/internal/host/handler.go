@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -23,23 +24,32 @@ import (
 const Version = "0.1.0-alpha"
 
 type Config struct {
-	Name, Token string
-	AllowInput  bool
-	Synthetic   bool
-	Backend     platform.Backend
+	Name, Token    string
+	AllowInput     bool
+	Synthetic      bool
+	Backend        platform.Backend
+	AllowClipboard bool
+	AllowAudio     bool
+	Sharing        platform.Sharing
+	LANToken       string
+	LANInvitation  string
 }
 type Handler struct {
-	cfg        Config
-	tokenHash  [32]byte
-	frames     chan struct{}
-	inputMu    sync.Mutex
-	held       map[string]platform.InputEvent
-	lastInput  time.Time
-	frameLimit limiter
-	inputLimit limiter
-	stop       chan struct{}
-	once       sync.Once
-	closed     atomic.Bool
+	cfg            Config
+	tokenHash      [32]byte
+	frames         chan struct{}
+	inputMu        sync.Mutex
+	held           map[string]platform.InputEvent
+	lastInput      time.Time
+	frameLimit     limiter
+	inputLimit     limiter
+	stop           chan struct{}
+	once           sync.Once
+	closed         atomic.Bool
+	clipboardLimit limiter
+	audioLimit     limiter
+	audioHub       audioHub
+	audioReaders   chan struct{}
 }
 type limiter struct {
 	mu    sync.Mutex
@@ -75,7 +85,13 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.Name == "" {
 		cfg.Name = "Remoter host"
 	}
-	h := &Handler{cfg: cfg, tokenHash: sha256.Sum256([]byte(cfg.Token)), frames: make(chan struct{}, 1), held: map[string]platform.InputEvent{}, stop: make(chan struct{})}
+	if cfg.Sharing == nil && cfg.Synthetic {
+		cfg.Sharing, _ = cfg.Backend.(platform.Sharing)
+	}
+	if cfg.Sharing == nil && !cfg.Synthetic && platform.SharingAvailable() {
+		cfg.Sharing = platform.NewSharing()
+	}
+	h := &Handler{cfg: cfg, tokenHash: sha256.Sum256([]byte(cfg.Token)), frames: make(chan struct{}, 1), held: map[string]platform.InputEvent{}, stop: make(chan struct{}), audioReaders: make(chan struct{}, 4)}
 	go h.releaseIdleInputs()
 	return h, nil
 }
@@ -83,6 +99,7 @@ func (h *Handler) Close() {
 	h.once.Do(func() {
 		h.closed.Store(true)
 		close(h.stop)
+		h.audioHub.close()
 		h.inputMu.Lock()
 		defer h.inputMu.Unlock()
 		h.releaseHeld()
@@ -119,12 +136,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func fail(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
+
+type relayContextKey struct{}
+
+func (h *Handler) ServeRelayHTTP(w http.ResponseWriter, r *http.Request) {
+	h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), relayContextKey{}, true)))
+}
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	auth := r.Header.Get("Authorization")
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(auth, "Bearer ")))
-	if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare(provided[:], h.tokenHash[:]) != 1 {
+	lanPeer := h.cfg.LANToken != "" && r.Context().Value(relayContextKey{}) != true && localPeer(r.RemoteAddr)
+	// Bootstrap is unavailable to browser origins and non-LAN/relay peers.
+	if r.URL.Path == "/v1/lan-pair" && lanPeer && r.Header.Get("Origin") == "" && !h.closed.Load() {
+		if r.Method != "GET" {
+			fail(w, 405, "method not allowed")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"invitation": h.cfg.LANInvitation})
+		return
+	}
+	lanHash := sha256.Sum256([]byte(h.cfg.LANToken))
+	validLAN := lanPeer && subtle.ConstantTimeCompare(provided[:], lanHash[:]) == 1
+	if !strings.HasPrefix(auth, "Bearer ") || (subtle.ConstantTimeCompare(provided[:], h.tokenHash[:]) != 1 && !validLAN) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		fail(w, 401, "authentication required")
 		return
@@ -140,6 +175,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/v1/clipboard":
+		h.clipboard(w, r)
+	case "/v1/audio":
+		h.audio(w, r)
 	case "/v1/health":
 		if r.Method != "GET" {
 			fail(w, 405, "method not allowed")
@@ -176,6 +215,7 @@ func (h *Handler) info(w http.ResponseWriter) {
 	caps := h.cfg.Backend.Capabilities()
 	caps.Input = caps.Input && h.cfg.AllowInput
 	result := map[string]any{"name": h.cfg.Name, "os": runtime.GOOS, "version": Version, "capabilities": caps, "displays": ds, "synthetic": h.cfg.Synthetic}
+	result["capabilities"] = map[string]bool{"capture": caps.Capture, "input": caps.Input, "clipboard": h.cfg.AllowClipboard && h.cfg.Sharing != nil, "audio": h.cfg.AllowAudio && h.cfg.Sharing != nil}
 	if err != nil {
 		result["warning"] = err.Error()
 	}

@@ -6,6 +6,7 @@
 - Explicit pairing, pinned TLS, view-only default, opt-in native input.
 - Display selection and bounded JPEG capture with backpressure.
 - Direct, Tailscale address, strict SOCKS5, and self-hosted opaque relay routes.
+- LAN discovery and opt-in one-click LAN access; Windows text clipboard and system audio sharing.
 - Windows local verification; macOS CI and physical-device verification tracked separately.
 
 ## 0.2 — Reliable unattended operation
@@ -22,7 +23,7 @@
 - Adaptive bitrate, dirty regions, cursor separation, congestion feedback, reconnect/resume.
 - Automatic path selection and NAT traversal after explicit-route behavior is proven.
 - Signed installers, authenticated updates, rollback/recovery, and rollout rings.
-- Capability-gated clipboard, file transfer, and audio.
+- File transfer and macOS clipboard/system audio hosting; richer clipboard formats.
 
 ## 0.4 — Fleet management
 

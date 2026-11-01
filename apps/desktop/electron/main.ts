@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, safeStorage } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, safeStorage } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { networkInterfaces } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { EngineClient, parseInvitation, type Invitation, type RouteSettings } from '@remoter/engine';
+import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, type Invitation, type RouteSettings } from '@remoter/engine';
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
@@ -22,6 +22,11 @@ let statePath = '';
 let writeQueue = Promise.resolve();
 const clients = new Map<string, EngineClient>();
 const inflightFrames = new Set<string>();
+const inflightAudio = new Map<string, { client: EngineClient; pending: ReturnType<EngineClient['audio']> }>();
+const discoveredHosts = new Map<string, LANHost>();
+let discoveryPending: Promise<LANHost[]> | undefined;
+const clipboardStates = new Map<string, { local: string; remote: string }>();
+const clipboardQueues = new Map<string, Promise<void>>();
 const inputQueues = new Map<string, InputQueue>();
 let rendererURL = '';
 let updates: UpdateManager;
@@ -103,7 +108,14 @@ function routeFor(device: SavedDevice): RouteSettings {
   }
   return route;
 }
-function makeClient(device: SavedDevice) { return new EngineClient(device.invitation, routeFor(device)); }
+async function makeClient(device: SavedDevice) {
+  const route = routeFor(device);
+  if (device.pairing === 'lan') {
+    if (route.mode !== 'direct' || route.proxy) throw new Error('This device uses easy LAN access. Select Direct and turn off SOCKS5, or add its invitation for another route.');
+    device.invitation = await pairLANHost(device.invitation);
+  }
+  return new EngineClient(device.invitation, route);
+}
 async function disconnect(id: string) {
   const client = clients.get(id);
   if (!client) return;
@@ -112,6 +124,7 @@ async function disconnect(id: string) {
   await (queue ? queue.send({ type: 'releaseAll' }) : client.input({ type: 'releaseAll' })).catch(() => {});
   queue?.close();
   client.close(); clients.delete(id); inputQueues.delete(id);
+  clipboardStates.delete(id); clipboardQueues.delete(id);
   const device = findDevice(id);
   audit(device.name, 'Session ended');
 }
@@ -164,6 +177,10 @@ async function startHost(value: unknown): Promise<{ invitation: string }> {
   const args = ['--listen', listen, '--state-dir', path.join(app.getPath('userData'), 'host'), '--exit-on-stdin-close'];
   if (advertise) args.push('--advertise', advertise);
   if (options.allowInput) args.push('--allow-input');
+  for (const [option, flag] of [['discover', '--discover'], ['easyLAN', '--easy-lan'], ['allowClipboard', '--allow-clipboard'], ['allowAudio', '--allow-audio']] as const) {
+    if (options[option] !== undefined && typeof options[option] !== 'boolean') throw new Error('Invalid sharing permission.');
+    if (options[option] === true) args.push(flag);
+  }
   // Synthetic capture is test-only and never toggled by an untrusted renderer.
   if (!app.isPackaged && process.env.REMOTER_TEST_SYNTHETIC === '1') args.push('--synthetic', '--name', 'Remoter test display');
   const child = spawn(binary, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -221,6 +238,10 @@ function registerIPC() {
       return handler(...args);
     });
   }
+  handle('setTheme', theme => {
+    if (theme !== 'light' && theme !== 'dark') throw new Error('Invalid theme.');
+    nativeTheme.themeSource = theme;
+  });
   handle('getState', publicState);
   handle('getUpdates', () => updates.snapshot());
   handle('checkUpdates', () => updates.check());
@@ -240,14 +261,70 @@ function registerIPC() {
     const invitation = parseInvitation(text(raw, 'invitation', 16384));
     const id = createHash('sha256').update(invitation.certificate).digest('hex').slice(0, 32);
     const existing = store.devices.find(d => d.id === id);
-    if (existing) { await disconnect(id); existing.invitation = invitation; existing.endpoint = invitation.endpoint; existing.name = invitation.name; }
+    if (existing) { await disconnect(id); existing.invitation = invitation; existing.endpoint = invitation.endpoint; existing.name = invitation.name; delete existing.pairing; }
     else store.devices.push({ id, name: invitation.name, endpoint: invitation.endpoint, invitation, addedAt: new Date().toISOString(), status: 'unknown' });
     audit(invitation.name, existing ? 'Pairing updated' : 'Device paired'); await persist(); return publicState();
   });
+  handle('discoverLAN', async () => {
+    if (store.network.proxyEnabled || store.network.mode !== 'direct') throw new Error('LAN discovery requires Direct mode with SOCKS5 turned off.');
+    discoveryPending ??= discoverLAN().finally(() => { discoveryPending = undefined; });
+    const hosts = await discoveryPending;
+    discoveredHosts.clear();
+    for (const host of hosts) discoveredHosts.set(host.id, host);
+    return hosts.map(({ certificate: _certificate, ...host }) => host);
+  });
+  handle('addLANDevice', async raw => {
+    if (store.network.proxyEnabled || store.network.mode !== 'direct') throw new Error('Easy LAN access requires Direct mode with SOCKS5 turned off.');
+    const host = discoveredHosts.get(text(raw, 'LAN device ID', 80));
+    if (!host || !host.easy) throw new Error('Scan again, or enable easy LAN connections on the host.');
+    const existing = store.devices.find(device => device.id === host.id);
+    // A manual pairing keeps its durable credentials and configured routes.
+    if (existing && existing.pairing !== 'lan') return { state: publicState(), deviceId: existing.id };
+    const invitation = await pairLANHost(host);
+    await disconnect(host.id);
+    if (existing) Object.assign(existing, { invitation, endpoint: host.endpoint, name: host.name });
+    else store.devices.push({ id: host.id, name: host.name, endpoint: host.endpoint, invitation, pairing: 'lan', addedAt: new Date().toISOString(), status: 'unknown' });
+    audit(host.name, 'Device added through easy LAN access'); await persist();
+    return { state: publicState(), deviceId: host.id };
+  });
   handle('removeDevice', async raw => { const device = findDevice(raw); await disconnect(device.id); store.devices = store.devices.filter(d => d.id !== device.id); audit(device.name, 'Device removed from this controller'); await persist(); return publicState(); });
   handle('saveNetwork', async raw => { const settings = validateNetwork(raw); updates.setProxyEnabled(settings.proxyEnabled); await disconnectAll(); store.network = settings; audit('This computer', 'Connection settings updated'); await persist(); return publicState(); });
-  handle('testDevice', async raw => { const device = findDevice(raw), client = makeClient(device); try { const info = await client.info(); device.status = 'ready'; return info; } catch (error) { device.status = 'offline'; throw error; } finally { client.close(); } });
-  handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); const client = makeClient(device); try { const info = await client.info(); clients.set(device.id, client); device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
+  handle('testDevice', async raw => { const device = findDevice(raw); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); device.status = 'ready'; return info; } catch (error) { device.status = 'offline'; throw error; } finally { client?.close(); } });
+  handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); clients.set(device.id, client); device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client?.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
+  handle('audio', async raw => {
+    const options = record(raw), id = findDevice(options.deviceId).id, client = clients.get(id);
+    if (!client) throw new Error('Start a session first.');
+    const after = integer(options.after, 0, Number.MAX_SAFE_INTEGER);
+    const existing = inflightAudio.get(id);
+    if (existing?.client === client) return existing.pending;
+    const pending = client.audio(after);
+    inflightAudio.set(id, { client, pending });
+    try { return await pending; } finally { if (inflightAudio.get(id)?.pending === pending) inflightAudio.delete(id); }
+  });
+  handle('clipboardSync', raw => {
+    const options = record(raw), id = findDevice(options.deviceId).id, client = clients.get(id);
+    if (!client) throw new Error('Start a session first.');
+    if (!['send', 'receive', 'both', 'reset'].includes(String(options.direction))) throw new Error('Invalid clipboard direction.');
+    const pending = (clipboardQueues.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (clients.get(id) !== client) return;
+      if (options.direction === 'reset') { clipboardStates.delete(id); return; }
+      let local = await clipboard.readText(), remote = await client.readClipboard();
+      if (clients.get(id) !== client) return;
+      if (Buffer.byteLength(local) > 1024 * 1024) throw new Error('Clipboard text exceeds 1 MiB.');
+      const previous = clipboardStates.get(id);
+      const send = options.direction === 'send' || (options.direction === 'both' && previous && local.length > 0 && local !== previous.local);
+      const receive = options.direction === 'receive' || (options.direction === 'both' && previous && remote.length > 0 && remote !== previous.remote);
+      if (send && local !== remote) { await client.writeClipboard(local); remote = local; }
+      else if (receive && local !== remote) {
+        // Do not overwrite text copied locally while the network request ran.
+        if (clients.get(id) !== client || await clipboard.readText() !== local) return;
+        await clipboard.writeText(remote); local = remote;
+      }
+      if (clients.get(id) === client) clipboardStates.set(id, { local, remote });
+    });
+    clipboardQueues.set(id, pending);
+    return pending;
+  });
   handle('frame', async raw => {
     const options = record(raw), id = findDevice(options.deviceId).id, client = clients.get(id);
     if (!client) throw new Error('Start a session first.');
@@ -267,7 +344,7 @@ function registerIPC() {
   handle('disconnect', async raw => { await disconnect(findDevice(raw).id); await persist(); return publicState(); });
   handle('startHost', startHost);
   handle('stopHost', stopHost);
-  handle('copy', raw => { clipboard.writeText(text(raw, 'clipboard text', 16384)); });
+  handle('copy', raw => clipboard.writeText(text(raw, 'clipboard text', 16384)));
 }
 
 app.whenReady().then(async () => {
@@ -279,8 +356,12 @@ app.whenReady().then(async () => {
   const indexPath = path.join(__dirname, 'renderer', 'index.html');
   rendererURL = !app.isPackaged && process.env.REMOTER_DEV_URL === 'http://127.0.0.1:5173' ? `${process.env.REMOTER_DEV_URL}/` : pathToFileURL(indexPath).href;
   window = new BrowserWindow({ title: 'Remoter', width: 1120, height: 790, minWidth: 750, minHeight: 560, show: false, backgroundColor: '#f8fafc', autoHideMenuBar: true,
+    ...(process.platform === 'win32' ? { titleBarStyle: 'hidden' as const, titleBarOverlay: { height: 51, color: nativeTheme.shouldUseDarkColors ? '#1e1f23' : '#ffffff', symbolColor: nativeTheme.shouldUseDarkColors ? '#eeeff2' : '#24272e' } } : {}),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false,
       offscreen: !app.isPackaged && process.env.REMOTER_TEST_HIDE === '1', backgroundThrottling: false } });
+  const updateTitleBar = () => { if (process.platform === 'win32' && window && !window.isDestroyed()) window.setTitleBarOverlay({ color: nativeTheme.shouldUseDarkColors ? '#1e1f23' : '#ffffff', symbolColor: nativeTheme.shouldUseDarkColors ? '#eeeff2' : '#24272e' }); };
+  nativeTheme.on('updated', updateTitleBar);
+  window.on('closed', () => nativeTheme.removeListener('updated', updateTitleBar));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

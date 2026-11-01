@@ -15,7 +15,7 @@ This repository is an early developer alpha. The first implementation uses bound
 | Native host | `native/cmd/remoter-host` | Go host with screen capture and native Windows/macOS input |
 | Relay | `native/cmd/remoter-relay` | Self-hosted opaque WebSocket tunnel for outbound connections |
 
-The controller keeps pairing and proxy credentials in an OS-encrypted local store. The host starts view-only; input requires an explicit option. The desktop starts without sample devices, and browser preview cannot control computers.
+The controller keeps pairing and proxy credentials in an OS-encrypted local store. Desktop sharing enables keyboard and mouse control by default; uncheck the option for view-only access. The standalone host CLI requires `--allow-input`. The desktop starts without sample devices, and browser preview cannot control computers.
 
 ## Develop
 
@@ -32,10 +32,18 @@ The Electron window is the functioning application. `npm run preview` opens only
 ### Connect two computers
 
 1. Build or install Remoter on both machines.
-2. On the computer being controlled, open **Share this computer**. Choose a listen address and the reachable HTTPS address to put in the invitation. Enable remote input only if wanted.
-3. Start sharing, then copy the invitation through a private channel.
-4. On the controller, choose **Add device**, paste the invitation, then connect.
+2. On the computer being controlled, open **Share this computer**. Choose a listen address and the reachable HTTPS address to put in the invitation. Keyboard and mouse control is enabled by default; uncheck it for view-only sharing.
+3. For one-click LAN access, enable **Show this PC in LAN discovery** and **Easy LAN connections**, then start sharing. Easy LAN access is off by default; enabling it lets anyone on an attached private LAN connect while sharing runs.
+4. On the controller, choose **Add device** and select **Add & connect** beside the nearby PC. Or copy the host's invitation through a private channel, paste it in **Add device**, then connect.
 5. Stop sharing to close access. Closing the desktop also stops the host it launched.
+
+Sessions start controlling once the first frame arrives when the host allows input, using the normal mouse pointer. Escape switches to view-only; losing focus releases held keys and buttons. **Options**, **Updates**, **Devices**, and **Activity** sit beside Remoter in the Windows title bar. Options and Updates remain accessible during sessions; disconnect before changing the connection route or installing an update.
+
+LAN discovery uses UDP port **45781** on the same network; desktop connections still use the host's HTTPS port (normally **45780**). Allow those ports for your private LAN if the firewall blocks them. Discovery sends public identity metadata; credentials are fetched over pinned HTTPS. Easy LAN credentials expire each time sharing stops, and saved LAN devices obtain fresh credentials on reconnect. LAN discovery and easy access require Direct mode with SOCKS5 off. Hosts with easy access off still appear, but require an invitation. A changed IP can be refreshed by scanning and selecting the same host again.
+
+On a Windows host, enable **Allow two-way text clipboard** and/or **Allow system audio** before starting sharing. During a session, use the clipboard icon to sync newly copied text in both directions, or its **Send clipboard to host** / **Get host clipboard** buttons for an immediate transfer. Ctrl/Cmd+V sends the local text before the remote paste when sync is on. Text is limited to 1 MiB; files, images, and clipboard history are not transferred. The speaker icon plays the host's default system output on the controller; it does not forward a microphone. Both session options start off and remain unavailable when the host denies them. System audio and clipboard hosting currently require Windows; the desktop controller can receive them on other platforms.
+
+Direct connections to private LAN addresses default to **LAN · Max quality**, requesting up to 4K JPEG frames at quality 90 with a 30 FPS target and no bandwidth throttle. Balanced and Sharper image also target 30 FPS; Less bandwidth targets 15 FPS. Each request waits for the previous frame, and the footer displays the received FPS. Actual FPS depends on host capture/encoding speed, resolution, and network throughput; this is still JPEG transport rather than hardware-encoded video.
 
 The desktop suggests a local private interface for sharing, falling back to loopback if none is available. Review Connection details before starting. The standalone CLI defaults to loopback. For a LAN, an example is listen `192.168.1.50:45780` and advertised address `https://192.168.1.50:45780`. Restrict the host firewall to the networks you intend to allow. For Tailscale, advertise the host's Tailscale IP or fully qualified MagicDNS name, and allow the port in your tailnet policy. The application does not install or administer Tailscale.
 
@@ -49,6 +57,9 @@ An invitation contains an access credential. Anyone who receives it can connect 
 
 # Input is disabled unless explicitly requested.
 ./native/bin/remoter-host --listen 0.0.0.0:45780 --advertise https://192.168.1.50:45780 --allow-input
+
+# Opt in to discovery, easy LAN access, clipboard and system audio.
+./native/bin/remoter-host --listen 192.168.1.50:45780 --discover --easy-lan --allow-input --allow-clipboard --allow-audio
 
 # Test transport without capturing a real screen or injecting real input.
 ./native/bin/remoter-host --synthetic --listen 127.0.0.1:45780
@@ -88,7 +99,7 @@ npm run package
 - Concurrent controllers of one host share input state; use one controlling session per host during the alpha.
 - Activity history belongs to the local controller; it is not an independent security audit trail.
 - Windows x64 releases support signed updates from LAN mirrors and GitHub, with user-triggered installation. See [updates and LAN setup](docs/updates.md). macOS updates are not implemented.
-- No file transfer, remote clipboard sync, audio, session recording, or fleet jobs yet.
+- No file transfer, microphone forwarding, session recording, or fleet jobs yet. Clipboard and system audio hosting are Windows-only.
 
 See [Roadmap](ROADMAP.md), [protocol](docs/protocol.md), and [contributing](CONTRIBUTING.md).
 

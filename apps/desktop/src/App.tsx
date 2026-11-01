@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity, ArrowDownLeft, ArrowRight, Check, ChevronDown, Clipboard,
-  Globe2, Info, Link2, LoaderCircle, Monitor, Network, PanelsTopLeft,
+  Globe2, Info, LoaderCircle, Moon, Sun, Monitor, Network, PanelsTopLeft,
   Plus, Search, Settings2, ShieldCheck, Square, Trash2, Wifi, X, Download,
 } from 'lucide-react';
 import { api, emptyState, errorMessage, isBrowserPreview } from './api';
 import { updateNetworkField } from './network-settings';
-import type { AppState, Device, HostInfo, NetworkSettings, UpdateState } from './types';
+import type { AppState, Device, DiscoveredHost, HostInfo, NetworkSettings, UpdateState } from './types';
 import Session from './Session';
 
 type Page = 'devices' | 'network' | 'activity' | 'updates';
@@ -23,6 +23,18 @@ const dateText = (value?: string) => {
 function Spinner() { return <LoaderCircle className="spin" size={16} aria-hidden="true" />; }
 
 export default function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('remoter-theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch { /* Use the system theme when storage is unavailable. */ }
+    return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  useLayoutEffect(() => {
+    document.documentElement.style.colorScheme = theme;
+    try { localStorage.setItem('remoter-theme', theme); } catch { /* The toggle still works without persistence. */ }
+  }, [theme]);
+  useEffect(() => { void api.setTheme(theme).catch(() => {}); }, [theme]);
   const [state, setState] = useState<AppState>(emptyState);
   const [page, setPage] = useState<Page>('devices');
   const [loading, setLoading] = useState(true);
@@ -33,6 +45,7 @@ export default function App() {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [session, setSession] = useState<{ device: Device; info: HostInfo } | null>(null);
+  const [sessionPanel, setSessionPanel] = useState<'network' | 'updates' | null>(null);
   const noticeTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const announcedUpdate = useRef('');
 
@@ -116,24 +129,24 @@ export default function App() {
   return <div className={`app-shell${session ? ' in-session' : ''}`}>
     <header className="app-header">
       <a href="#" className="brand" onClick={(event) => { event.preventDefault(); if (!session) setPage('devices'); }} aria-label="Remoter home">
-        <span className="brand-mark"><PanelsTopLeft size={20} strokeWidth={1.8} /></span><span>Remoter<span className="brand-period">.</span></span>
+        <span className="brand-mark"><PanelsTopLeft size={20} strokeWidth={1.8} /></span><span>Remoter</span>
       </a>
-      {!session && <nav className="main-nav" aria-label="Main navigation">
-        {([{ key: 'devices', label: 'Devices', icon: Monitor }, { key: 'network', label: 'Network', icon: Network }, { key: 'activity', label: 'Activity', icon: Activity }, { key: 'updates', label: 'Updates', icon: Download }] as const).map(({ key, label, icon: Icon }) =>
-          <button key={key} className={`nav-item${page === key ? ' active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => setPage(key)}><Icon size={16} />{label}</button>,
+      <nav className="main-nav" aria-label="Main navigation">
+        {([{ key: 'devices', label: 'Devices', icon: Monitor }, { key: 'network', label: 'Options', icon: Settings2 }, { key: 'activity', label: 'Activity', icon: Activity }, { key: 'updates', label: 'Updates', icon: Download }] as const).filter(({ key }) => !session || key === 'network' || key === 'updates').map(({ key, label, icon: Icon }) =>
+          <button key={key} className={`nav-item${(!session && page === key) || sessionPanel === key ? ' active' : ''}`} aria-current={!session && page === key ? 'page' : undefined} onClick={() => { if (session && (key === 'network' || key === 'updates')) setSessionPanel(key); else setPage(key); }}><Icon size={16} />{label}</button>,
         )}
-      </nav>}
-      <span className="workspace-label"><span className="workspace-dot" />Local workspace</span>
+      </nav>
+      <button className="icon-button theme-toggle" role="switch" aria-checked={theme === 'dark'} aria-label="Dark mode" title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>
     </header>
 
     {isBrowserPreview && <div className="preview-banner"><Info size={14} /><span>Browser preview · Device connections and screen sharing are available in the desktop app.</span></div>}
 
-    {session ? <Session device={session.device} info={session.info} disconnecting={busy === 'disconnect'} onDisconnect={disconnect} /> :
+    {session ? <Session device={session.device} info={session.info} network={state.network} disconnecting={busy === 'disconnect'} onDisconnect={disconnect} /> :
       <main className="main-content">
-        {loading ? <div className="loading-state"><Spinner /><span>Opening your workspace…</span></div> : loadError ?
-          <div className="empty-state"><Info size={26} /><h1>Couldn’t open your workspace</h1><p>{loadError}</p><button className="button primary" onClick={() => void load()}>Try again</button></div> : <>
+        {loading ? <div className="loading-state"><Spinner /><span>Loading…</span></div> : loadError ?
+          <div className="empty-state"><Info size={26} /><h1>Couldn’t load devices</h1><p>{loadError}</p><button className="button primary" onClick={() => void load()}>Try again</button></div> : <>
             {page === 'devices' && <>
-              <div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Your devices</h1><p>One place for the computers you work with.</p></div><button className="button primary" onClick={() => setShowAdd(true)}><Plus size={16} />Add device</button></div>
+              <div className="page-heading"><div><h1>Devices</h1></div><button className="button primary" onClick={() => setShowAdd(true)}><Plus size={16} />Add device</button></div>
               {state.devices.length > 0 ? <>
                 <div className="directory-toolbar"><label className="search-field"><Search size={16} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a device…" aria-label="Search devices" /></label><span className="count-label">{state.devices.length} {state.devices.length === 1 ? 'device' : 'devices'}</span></div>
                 <div className="device-list">
@@ -148,9 +161,8 @@ export default function App() {
                 </div>
               </> : <div className="onboarding-empty">
                 <div className="empty-illustration" aria-hidden="true"><div className="illustration-back" /><div className="illustration-front"><Monitor size={35} strokeWidth={1.3} /><span className="illustration-plus"><Plus size={14} /></span></div></div>
-                <h2>Your workspace, within reach.</h2><p>Add your first computer to connect to its desktop.<br />All you need is an invitation from its host.</p>
-                <button className="button" onClick={() => setShowAdd(true)}>Add your first device<ArrowRight size={15} /></button>
-                <div className="empty-footnote"><Link2 size={13} />Connect over LAN, Tailscale, or your relay</div>
+                <h2>No devices added</h2><p>Add a computer using its sharing invitation.</p>
+                <button className="button" onClick={() => setShowAdd(true)}>Add a device<ArrowRight size={15} /></button>
               </div>}
               <HostPanel state={state} updateState={setState} notify={notify} />
             </>}
@@ -159,19 +171,23 @@ export default function App() {
             {page === 'updates' && <UpdatesPanel sharing={state.hostRunning} />}
 
             {page === 'activity' && <>
-              <div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Recent activity</h1><p>Connections and changes in this workspace.</p></div><span className="quiet-label">Stored on this computer</span></div>
-              {state.activity.length ? <div className="activity-list">{[...state.activity].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()).map((item) => <div className="activity-row" key={item.id}><div className="activity-icon"><ArrowDownLeft size={17} /></div><div className="activity-description"><strong>{item.deviceName || 'This computer'}</strong><span>{item.action}</span></div><time dateTime={item.at}>{dateText(item.at)}</time></div>)}</div> : <div className="empty-state activity-empty"><div className="empty-icon"><Activity size={26} strokeWidth={1.4} /></div><h2>A fresh start.</h2><p>Your connection history will appear here.</p><button className="text-button" onClick={() => setPage('devices')}>Go to devices<ArrowRight size={14} /></button></div>}
+              <div className="page-heading"><div><h1>Activity</h1></div><span className="quiet-label">Stored on this computer</span></div>
+              {state.activity.length ? <div className="activity-list">{[...state.activity].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()).map((item) => <div className="activity-row" key={item.id}><div className="activity-icon"><ArrowDownLeft size={17} /></div><div className="activity-description"><strong>{item.deviceName || 'This computer'}</strong><span>{item.action}</span></div><time dateTime={item.at}>{dateText(item.at)}</time></div>)}</div> : <div className="empty-state activity-empty"><div className="empty-icon"><Activity size={26} strokeWidth={1.4} /></div><h2>No activity yet</h2><button className="text-button" onClick={() => setPage('devices')}>Go to devices<ArrowRight size={14} /></button></div>}
             </>}
           </>}
       </main>}
 
-    {!session && <footer className="app-footer"><span><ShieldCheck size={13} />Your devices. Your infrastructure.</span><span><span className="footer-route-dot" />{state.network.proxyEnabled ? 'SOCKS5 proxy' : routeNames[state.network.mode]}</span></footer>}
+    {!session && <footer className="app-footer"><span><span className="footer-route-dot" />{state.network.proxyEnabled ? 'SOCKS5 proxy' : routeNames[state.network.mode]}</span></footer>}
+
+    {session && sessionPanel && <Modal title={sessionPanel === 'network' ? 'Options' : 'Updates'} onClose={() => setSessionPanel(null)}><div className="session-settings">
+      {sessionPanel === 'network' ? <NetworkPanel network={state.network} locked onSave={async () => {}} /> : <UpdatesPanel sharing />}
+    </div></Modal>}
 
     {notice && <div className={`toast ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={17} /> : <Info size={17} />}<span>{notice.text}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice(null)}><X size={15} /></button></div>}
 
-    {showAdd && <AddDeviceModal onClose={() => setShowAdd(false)} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added to your workspace.'); }} />}
+    {showAdd && <AddDeviceModal onClose={() => setShowAdd(false)} onLAN={async (id) => { const result = await api.addLANDevice(id); setState(result.state); setShowAdd(false); await connect(result.state.devices.find(device => device.id === result.deviceId)!); }} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added.'); }} />}
     {removeDevice && <Modal title="Remove device?" onClose={() => !busy && setRemoveDevice(null)} busy={!!busy}>
-      <p className="modal-description"><strong>{removeDevice.name}</strong> will be removed from this workspace. Its host will keep running.</p>
+      <p className="modal-description"><strong>{removeDevice.name}</strong> will be removed. Its host will keep running.</p>
       <div className="modal-actions"><button className="button" disabled={!!busy} onClick={() => setRemoveDevice(null)}>Cancel</button><button className="button danger" disabled={!!busy} onClick={async () => { setBusy('remove'); try { setState(await api.removeDevice(removeDevice.id)); setRemoveDevice(null); notify('Device removed.'); } catch (error) { notify(errorMessage(error), 'error'); } finally { setBusy(''); } }}>{busy === 'remove' ? <Spinner /> : <Trash2 size={15} />}Remove device</button></div>
     </Modal>}
   </div>;
@@ -191,7 +207,7 @@ function UpdatesPanel({ sharing }: { sharing: boolean }) {
   }, []);
   const busy = state?.phase === 'checking' || state?.phase === 'downloading';
   return <>
-    <div className="page-heading"><div><span className="eyebrow">PREFERENCES</span><h1>App updates</h1><p>Keep Remoter current across your computers.</p></div></div>
+    <div className="page-heading"><div><h1>App updates</h1></div></div>
     <section className="settings-section" aria-label="App updates">
       <div className="settings-heading"><h2>Remoter {state?.currentVersion ?? ''}</h2><p>Checks Jack PC, GPD PC, and GitHub. Matching LAN downloads are preferred.</p></div>
       <p role="status">{state?.message ?? 'Loading update status…'}</p>
@@ -215,17 +231,37 @@ function Modal({ title, children, onClose, busy = false }: { title: string; chil
   return <dialog className="modal" ref={ref} aria-labelledby="modal-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (!busy && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); } }}><div className="modal-heading"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="Close dialog" disabled={busy} onClick={onClose}><X size={19} /></button></div>{children}</dialog>;
 }
 
-function AddDeviceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (invitation: string) => Promise<void> }) {
+function AddDeviceModal({ onClose, onAdd, onLAN }: { onClose: () => void; onAdd: (invitation: string) => Promise<void>; onLAN: (id: string) => Promise<void> }) {
   const [invitation, setInvitation] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [hosts, setHosts] = useState<DiscoveredHost[]>([]);
+  const [scanning, setScanning] = useState(true);
+  const [scanError, setScanError] = useState('');
+  async function scan() {
+    setScanning(true); setScanError('');
+    try { setHosts(await api.discoverLAN()); } catch (error) { setScanError(errorMessage(error)); }
+    finally { setScanning(false); }
+  }
+  useEffect(() => { void scan(); }, []);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setError(''); try { await onAdd(invitation.trim()); } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); } }
-  return <Modal title="Add a device" onClose={onClose} busy={busy}><p className="modal-description">Open Remoter on the other computer, start sharing, then paste its invitation here.</p><form onSubmit={submit}><label className="field-label" htmlFor="device-invitation">Device invitation</label><textarea id="device-invitation" className="invitation-input" rows={5} disabled={busy} value={invitation} onChange={(event) => setInvitation(event.target.value)} placeholder="Paste the invitation from your other computer…" autoFocus spellCheck={false} autoComplete="off" required /><div className="field-help"><ShieldCheck size={14} /><span>Invitations grant access. Only use one from a device you trust.</span></div>{error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}<div className="modal-actions"><button className="button" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" type="submit" disabled={!invitation.trim() || busy}>{busy ? <Spinner /> : <Plus size={16} />}Add device</button></div></form></Modal>;
+  return <Modal title="Add a device" onClose={onClose} busy={busy}>
+    <section className="lan-discovery" aria-label="Nearby computers">
+      <div className="lan-discovery-heading"><strong><Wifi size={16} />Nearby computers</strong><button className="button small" disabled={busy || scanning} onClick={() => void scan()}>{scanning ? <Spinner /> : <Search size={14} />}{scanning ? 'Searching…' : 'Scan again'}</button></div>
+      <p className="field-help">Start sharing on the other PC. Enable “Easy LAN connections” there for one-click access.</p>
+      <div aria-live="polite">{!scanning && !hosts.length && !scanError && <p className="field-help">No computers found. Check that both PCs are on the same LAN and that UDP port 45781 is allowed.</p>}{scanError && <p className="inline-error">{scanError}</p>}</div>
+      {hosts.map(host => <div className="lan-host" key={host.id}><Monitor size={19} /><div><strong>{host.name}</strong><span>{host.endpoint}</span></div><button className="button small" disabled={busy || !host.easy} title={host.easy ? 'Add and connect to this computer' : 'Enable Easy LAN connections on this host, or paste its invitation below'} onClick={async () => { setBusy(true); setError(''); try { await onLAN(host.id); } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); } }}>{host.easy ? 'Add & connect' : 'Invitation required'}</button></div>)}
+    </section>
+    <form onSubmit={submit}><label className="field-label" htmlFor="device-invitation">Device invitation</label><textarea id="device-invitation" className="invitation-input" rows={3} disabled={busy} value={invitation} onChange={(event) => setInvitation(event.target.value)} placeholder="Or paste an invitation…" spellCheck={false} autoComplete="off" required /><div className="field-help"><ShieldCheck size={14} /><span>Use an invitation for Tailscale, relay, or hosts with easy LAN access off.</span></div>{error && <div className="inline-error" role="alert"><Info size={16} />{error}</div>}<div className="modal-actions"><button className="button" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" type="submit" disabled={!invitation.trim() || busy}>{busy ? <Spinner /> : <Plus size={16} />}Add device</button></div></form></Modal>;
 }
 
 function HostPanel({ state, updateState, notify }: { state: AppState; updateState: (state: AppState) => void; notify: (text: string, kind?: Notice['kind']) => void }) {
   const [expanded, setExpanded] = useState(false);
-  const [allowInput, setAllowInput] = useState(false);
+  const [allowInput, setAllowInput] = useState(true);
+  const [discover, setDiscover] = useState(true);
+  const [easyLAN, setEasyLAN] = useState(false);
+  const [allowClipboard, setAllowClipboard] = useState(false);
+  const [allowAudio, setAllowAudio] = useState(false);
   const [listen, setListen] = useState(state.hostSuggestedListen ?? '127.0.0.1:45780');
   const [advertise, setAdvertise] = useState(state.hostSuggestedEndpoint ?? 'https://127.0.0.1:45780');
   const [advanced, setAdvanced] = useState(false);
@@ -237,14 +273,21 @@ function HostPanel({ state, updateState, notify }: { state: AppState; updateStat
     setBusy(true);
     try {
       if (state.hostRunning) { await api.stopHost(); setInvitation(''); notify('Sharing stopped.'); }
-      else { const result = await api.startHost({ allowInput, listen: listen.trim(), advertise: advertise.trim() }); setInvitation(result.invitation); setExpanded(true); notify('This computer is ready to share.'); }
+      else { const result = await api.startHost({ allowInput, discover, easyLAN, allowClipboard, allowAudio, listen: listen.trim(), advertise: advertise.trim() }); setInvitation(result.invitation); setExpanded(true); notify('This computer is ready to share.'); }
       updateState(await api.getState());
     } catch (error) { notify(errorMessage(error), 'error'); }
     finally { setBusy(false); }
   }
   return <section className={`host-panel${expanded ? ' expanded' : ''}`} aria-label="Share this computer">
-    <div className="host-summary"><div className="host-icon"><Monitor size={20} strokeWidth={1.6} /></div><div className="host-title"><h2>This computer <span className={`host-badge${state.hostRunning ? ' sharing' : ''}`}>{state.hostRunning ? 'Sharing' : 'Not sharing'}</span></h2><p>{state.hostRunning ? 'Ready for a connection from your other devices.' : 'Make this desktop available to your other devices.'}</p></div><button className="button small" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? 'Hide details' : 'Set up sharing'}<ChevronDown size={15} className={expanded ? 'rotate' : ''} /></button></div>
+    <div className="host-summary"><div className="host-icon"><Monitor size={20} strokeWidth={1.6} /></div><div className="host-title"><h2>This computer <span className={`host-badge${state.hostRunning ? ' sharing' : ''}`}>{state.hostRunning ? 'Sharing' : 'Not sharing'}</span></h2></div><button className="button small" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? 'Hide details' : 'Set up sharing'}<ChevronDown size={15} className={expanded ? 'rotate' : ''} /></button></div>
     {expanded && <div className="host-details">
+      {!state.hostRunning && <fieldset className="sharing-options" disabled={busy}><legend>Sharing permissions</legend>
+        <label className="check-label"><input type="checkbox" checked={discover} onChange={event => { setDiscover(event.target.checked); if (!event.target.checked) setEasyLAN(false); }} />Show this PC in LAN discovery</label>
+        <label className="check-label"><input type="checkbox" checked={easyLAN} onChange={event => { setEasyLAN(event.target.checked); if (event.target.checked) setDiscover(true); }} />Easy LAN connections</label>
+        <p className="field-help">Anyone on this PC’s private LAN can connect without an invitation while this is enabled. Stop sharing to revoke LAN access.</p>
+        <label className="check-label"><input type="checkbox" checked={allowClipboard} onChange={event => setAllowClipboard(event.target.checked)} />Allow two-way text clipboard</label>
+        <label className="check-label"><input type="checkbox" checked={allowAudio} onChange={event => setAllowAudio(event.target.checked)} />Allow system audio (Windows host)</label>
+      </fieldset>}
       <div className="host-controls"><div>{state.hostRunning ? <span className="check-label"><ShieldCheck size={14} />Sharing is enabled</span> : <label className="check-label"><input type="checkbox" checked={allowInput} disabled={busy} onChange={(event) => setAllowInput(event.target.checked)} /><span>Allow keyboard and mouse control</span></label>}<p className="field-help">{state.hostRunning ? 'Stop sharing to change access permissions.' : 'Keep this off to share your screen in view-only mode.'}</p></div><button className={`button ${state.hostRunning ? '' : 'primary'}`} disabled={busy} onClick={() => void toggleHost()}>{busy ? <Spinner /> : state.hostRunning ? <Square size={14} /> : <ArrowUpRightIcon />}{state.hostRunning ? 'Stop sharing' : 'Start sharing'}</button></div>
       {!state.hostRunning && <><p className="field-help">{advertise.includes('://127.') || advertise.includes('://localhost') || advertise.includes('://[::1]') ? 'Local testing only. Set a LAN or Tailscale address in connection details to reach this computer remotely.' : `Host address: ${advertise}`}</p><button className="text-button advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}><Settings2 size={13} />Connection details<ChevronDown size={13} className={advanced ? 'rotate' : ''} /></button>{advanced && <div className="host-advanced"><label className="field-label">Listen address<input className="text-input" value={listen} onChange={(event) => setListen(event.target.value)} placeholder="192.168.1.20:45780" spellCheck={false} disabled={busy} /></label><label className="field-label">Address in invitation<input className="text-input" value={advertise} onChange={(event) => setAdvertise(event.target.value)} placeholder="https://192.168.1.20:45780" spellCheck={false} disabled={busy} /><span className="field-help">Use a LAN or Tailscale HTTPS address your other computer can reach.</span></label></div>}</>}
       {state.hostRunning && <div className="host-invitation"><div><span className="field-label">Your invitation</span><p className="field-help">{invitation ? 'Copy this to Remoter on your other computer. Anyone with it can connect.' : 'Restart sharing to retrieve its invitation.'}</p></div><button className="button small" disabled={!invitation} onClick={async () => { try { await api.copy(invitation); setCopied(true); setTimeout(() => setCopied(false), 2200); } catch (error) { notify(errorMessage(error), 'error'); } }}>{copied ? <Check size={15} /> : <Clipboard size={15} />}{copied ? 'Copied' : 'Copy invitation'}</button></div>}
@@ -252,7 +295,7 @@ function HostPanel({ state, updateState, notify }: { state: AppState; updateStat
   </section>;
 }
 
-function NetworkPanel({ network, onSave }: { network: NetworkSettings; onSave: (settings: NetworkSettings) => Promise<void> }) {
+function NetworkPanel({ network, onSave, locked = false }: { network: NetworkSettings; onSave: (settings: NetworkSettings) => Promise<void>; locked?: boolean }) {
   const [draft, setDraft] = useState<NetworkSettings>({ ...network });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -262,18 +305,20 @@ function NetworkPanel({ network, onSave }: { network: NetworkSettings; onSave: (
     setDraft((previous) => updateNetworkField(previous, key, value));
   }
   async function save(event: FormEvent) {
+    if (locked) { event.preventDefault(); return; }
     event.preventDefault(); setBusy(true); setError('');
     try { await onSave(draft); }
     catch (error) { setError(errorMessage(error)); }
     finally { setBusy(false); }
   }
   return <>
-    <div className="page-heading"><div><span className="eyebrow">PREFERENCES</span><h1>Connection settings</h1><p>Choose how this computer reaches your devices.</p></div></div>
+    <div className="page-heading"><div><h1>Connection settings</h1></div></div>
+    {locked && <p className="settings-note"><Info size={14} />Disconnect before changing connection settings.</p>}
     <form className="network-form" onSubmit={save} aria-busy={busy}>
-      <fieldset className="settings-fieldset" disabled={busy}>
+      <fieldset className="settings-fieldset" disabled={busy || locked}>
         <legend className="sr-only">Connection preferences</legend>
         <section className="settings-section">
-          <div className="settings-heading"><h2>Connection route</h2><p>Use the route that fits your network.</p></div>
+          <div className="settings-heading"><h2>Connection route</h2></div>
           <div className="route-options" role="radiogroup" aria-label="Connection route">
             {([
               { value: 'direct', title: 'Direct', detail: 'Local network or reachable address', icon: Wifi },

@@ -93,8 +93,9 @@ func validKey(code string) bool {
 // Synthetic is a deterministic test desktop. It never reads the actual screen
 // or calls an operating system input API.
 type Synthetic struct {
-	mu     sync.Mutex
-	events []InputEvent
+	mu        sync.Mutex
+	events    []InputEvent
+	clipboard string
 }
 
 func NewSynthetic() *Synthetic                { return &Synthetic{} }

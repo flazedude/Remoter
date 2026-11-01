@@ -9,8 +9,10 @@ Remoter's original source is Apache-2.0. It uses these independently licensed fo
 | React | MIT | Interface |
 | Lucide | ISC | Interface icons |
 | kbinani/screenshot | MIT | Windows screen capture; macOS uses Remoter's own ScreenCaptureKit adapter |
+| moutend/go-wca | MIT | Windows WASAPI system audio capture |
+| go-ole/go-ole | MIT | Windows COM audio interfaces |
 | golang.org/x/sys | BSD-3-Clause | Operating-system interfaces |
-| golang.org/x/net | BSD-3-Clause | Host-side SOCKS5 transport |
+| golang.org/x/net | BSD-3-Clause | Host-side SOCKS5 transport and LAN multicast discovery |
 | coder/websocket | ISC | Relay tunnel framing |
 | ws | MIT | Client WebSocket transport |
 | socks | MIT | SOCKS5 connection negotiation |

@@ -5,9 +5,11 @@ import { randomBytes } from 'node:crypto';
 import { access, mkdir, mkdtemp } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import dgram from 'node:dgram';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EngineClient, parseInvitation, type Invitation } from '@remoter/engine';
+import { EngineClient, parseInvitation, pairLANHost, discoverLAN, type Invitation } from '@remoter/engine';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extension = process.platform === 'win32' ? '.exe' : '';
@@ -135,9 +137,57 @@ try {
   const direct = new EngineClient(directInvitation);
   clients.push(direct);
   const directBytes = await exercise(direct);
+  await assert.rejects(direct.readClipboard(), /permission/);
+  await assert.rejects(direct.audio(0), /permission/);
   direct.close();
   await stop(directHost);
   console.log(`PASS direct: Go synthetic host → pinned TLS 1.3 → Node engine; JPEG ${directBytes} bytes; input/release verified.`);
+
+  const sharingHost = launch(hostBinary, ['--synthetic', '--allow-clipboard', '--allow-audio', '--easy-lan', '--exit-on-stdin-close', '--listen', '127.0.0.1:0', '--state-dir', path.join(runDir, 'sharing'), '--name', 'LAN sharing test'], cleanEnv);
+  const sharingInvitation = await ready(sharingHost);
+  const discovery = dgram.createSocket('udp4');
+  try {
+    const nonce = randomBytes(16).toString('hex');
+    const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('LAN discovery responder did not reply.')), 2000);
+      discovery.once('error', error => { clearTimeout(timer); reject(error); });
+      discovery.once('message', bytes => { clearTimeout(timer); try { resolve(JSON.parse(bytes.toString())); } catch { reject(new Error('Invalid LAN discovery response.')); } });
+      discovery.send(Buffer.from(JSON.stringify({ service: 'remoter-discover-v1', nonce })), 45781, '127.0.0.1');
+    });
+    assert.equal(reply.nonce, nonce); assert.equal(reply.easy, true); assert.equal(reply.certificate, sharingInvitation.certificate);
+    assert.equal('token' in reply, false); assert.equal('invitation' in reply, false);
+  } finally { discovery.close(); }
+  const pairedInvitation = await pairLANHost(sharingInvitation);
+  assert.notEqual(pairedInvitation.token, sharingInvitation.token, 'LAN access must use a revocable process token');
+  const sharing = new EngineClient(pairedInvitation); clients.push(sharing);
+  const sharingInfo = await sharing.info();
+  assert.equal(sharingInfo.capabilities.clipboard, true); assert.equal(sharingInfo.capabilities.audio, true); assert.equal(sharingInfo.capabilities.input, false);
+  for (const text of ['Hello 你好 👋\nclipboard', '', 'next clipboard value']) { await sharing.writeClipboard(text); assert.equal(await sharing.readClipboard(), text); }
+  const audio = await sharing.audio(0);
+  assert.equal(Buffer.from(audio.data, 'base64').length, 9600);
+  assert.ok((await sharing.audio(audio.sequence)).sequence > audio.sequence);
+  await assert.rejects(sharing.writeClipboard('x'.repeat(1024 * 1024 + 1)), /1 MiB/);
+  sharing.close(); await stop(sharingHost);
+  const restarted = launch(hostBinary, ['--synthetic', '--exit-on-stdin-close', '--listen', '127.0.0.1:0', '--state-dir', path.join(runDir, 'sharing')], cleanEnv);
+  const restartedInvitation = await ready(restarted);
+  const revoked = new EngineClient({ ...pairedInvitation, endpoint: restartedInvitation.endpoint }); clients.push(revoked);
+  await assert.rejects(revoked.info(), /rejected/);
+  await assert.rejects(pairLANHost(restartedInvitation), /rejected/);
+  revoked.close(); await stop(restarted);
+  console.log('PASS sharing: easy LAN pairing, revocation, Unicode clipboard round-trip, audio packets and host permission enforcement.');
+
+  const lanAddress = Object.values(networkInterfaces()).flat().find(iface => iface?.family === 'IPv4' && !iface.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(iface.address))?.address;
+  if (lanAddress) {
+    const lanHost = launch(hostBinary, ['--synthetic', '--discover', '--easy-lan', '--exit-on-stdin-close', '--listen', `${lanAddress}:0`, '--state-dir', path.join(runDir, 'discovery'), '--name', 'LAN discovery integration host'], cleanEnv);
+    const lanInvitation = await ready(lanHost);
+    const found = (await discoverLAN()).find(host => host.certificate === lanInvitation.certificate);
+    assert.ok(found, 'LAN scan did not discover the synthetic host on this computer’s private interface. Check UDP 45781.');
+    assert.equal(found.easy, true);
+    const discovered = new EngineClient(await pairLANHost(found)); clients.push(discovered);
+    assert.equal((await discovered.info()).name, 'LAN discovery integration host');
+    discovered.close(); await stop(lanHost);
+    console.log('PASS discovery: multicast/subnet-broadcast scan → public host identity → pinned HTTPS pairing → real host connection.');
+  }
 
   const port = await freePort();
   const deviceId = 'smoke-' + randomBytes(6).toString('hex');

@@ -17,6 +17,7 @@ const unavailable = async (): Promise<never> => {
 
 // The browser preview never invents devices, sessions, or host capabilities.
 const previewAPI: RemoterAPI = {
+  setTheme: async () => {},
   getUpdates: async () => ({ phase: 'unsupported', currentVersion: 'Preview', message: 'Open the Windows desktop app to check for updates.' }),
   checkUpdates: unavailable, installUpdate: unavailable,
   getState: async () => structuredClone(previewState),
@@ -25,6 +26,7 @@ const previewAPI: RemoterAPI = {
     return structuredClone(previewState);
   },
   addDevice: unavailable, removeDevice: unavailable, testDevice: unavailable,
+  discoverLAN: unavailable, addLANDevice: unavailable, audio: unavailable, clipboardSync: unavailable,
   connect: unavailable, frame: unavailable, input: unavailable, disconnect: unavailable,
   startHost: unavailable, stopHost: unavailable, copy: unavailable,
 };

@@ -7,7 +7,7 @@ import type { Duplex } from 'node:stream';
 import { SocksClient } from 'socks';
 import WebSocket, { createWebSocketStream } from 'ws';
 import { endpointURL, relayURL, validateInvitation, validateRelay, validateRoute, validateTailscaleEndpoint } from './invitation.js';
-import type { FrameOptions, HostInfo, InputEvent, Invitation, RouteSettings } from './types.js';
+import type { AudioPacket, FrameOptions, HostInfo, InputEvent, Invitation, RouteSettings } from './types.js';
 
 const CONNECT_TIMEOUT = 10_000;
 const REQUEST_TIMEOUT = 15_000;
@@ -93,6 +93,36 @@ export class EngineClient {
   async input(event: InputEvent): Promise<void> {
     validateInput(event);
     await this.request('POST', '/v1/input', Buffer.from(JSON.stringify(event)), 4096);
+  }
+
+  async pairLAN(): Promise<Invitation> {
+    if (this.route.mode !== 'direct' || this.route.proxy) throw new Error('Easy LAN pairing requires a direct local connection.');
+    const { body } = await this.request('GET', '/v1/lan-pair', undefined, 32768);
+    const value = JSON.parse(body.toString('utf8'));
+    const { parseInvitation } = await import('./invitation.js');
+    const invitation = parseInvitation(value.invitation);
+    if (!new X509Certificate(invitation.certificate).raw.equals(new X509Certificate(this.invitation.certificate).raw)) throw new Error('The LAN host changed identity.');
+    return { ...invitation, endpoint: this.endpoint.origin };
+  }
+
+  async readClipboard(): Promise<string> {
+    const { body } = await this.request('GET', '/v1/clipboard', undefined, 6 * 1024 * 1024 + 64);
+    const value = JSON.parse(body.toString('utf8'));
+    if (typeof value.text !== 'string' || Buffer.byteLength(value.text) > 1024 * 1024 || value.text.includes('\0')) throw new Error('Invalid clipboard text from host.');
+    return value.text;
+  }
+
+  async writeClipboard(text: string): Promise<void> {
+    if (typeof text !== 'string' || Buffer.byteLength(text) > 1024 * 1024 || text.includes('\0')) throw new Error('Clipboard text must be at most 1 MiB.');
+    await this.request('POST', '/v1/clipboard', Buffer.from(JSON.stringify({ text })), 4096);
+  }
+
+  async audio(after: number): Promise<AudioPacket> {
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error('Invalid audio sequence.');
+    const { body } = await this.request('GET', `/v1/audio?after=${after}`, undefined, 128 * 1024);
+    const packet = JSON.parse(body.toString('utf8')) as AudioPacket;
+    if (!Number.isSafeInteger(packet.sequence) || packet.sequence < after || packet.sampleRate !== 48000 || packet.channels !== 2 || typeof packet.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(packet.data) || Buffer.from(packet.data, 'base64').length % 4 !== 0) throw new Error('Invalid host audio packet.');
+    return packet;
   }
 
   close(): void {

@@ -1,11 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
 const invoke = (name: string, ...args: unknown[]) => ipcRenderer.invoke(`remoter:${name}`, ...args);
 contextBridge.exposeInMainWorld('remoter', {
+  setTheme: (theme: 'light' | 'dark') => invoke('setTheme', theme),
   getUpdates: () => invoke('getUpdates'),
   checkUpdates: () => invoke('checkUpdates'),
   installUpdate: () => invoke('installUpdate'),
   getState: () => invoke('getState'),
   addDevice: (invitation: string) => invoke('addDevice', invitation),
+  discoverLAN: () => invoke('discoverLAN'),
+  addLANDevice: (id: string) => invoke('addLANDevice', id),
+  audio: (options: unknown) => invoke('audio', options),
+  clipboardSync: (options: unknown) => invoke('clipboardSync', options),
   removeDevice: (id: string) => invoke('removeDevice', id),
   saveNetwork: (settings: unknown) => invoke('saveNetwork', settings),
   testDevice: (id: string) => invoke('testDevice', id),
