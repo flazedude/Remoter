@@ -2,14 +2,14 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import {
   Activity, ArrowDownLeft, ArrowRight, Check, ChevronDown, Clipboard,
   Globe2, Info, Link2, LoaderCircle, Monitor, Network, PanelsTopLeft,
-  Plus, Search, Settings2, ShieldCheck, Square, Trash2, Wifi, X,
+  Plus, Search, Settings2, ShieldCheck, Square, Trash2, Wifi, X, Download,
 } from 'lucide-react';
 import { api, emptyState, errorMessage, isBrowserPreview } from './api';
 import { updateNetworkField } from './network-settings';
-import type { AppState, Device, HostInfo, NetworkSettings } from './types';
+import type { AppState, Device, HostInfo, NetworkSettings, UpdateState } from './types';
 import Session from './Session';
 
-type Page = 'devices' | 'network' | 'activity';
+type Page = 'devices' | 'network' | 'activity' | 'updates';
 type Notice = { text: string; kind: 'success' | 'error' };
 
 const routeNames = { direct: 'Direct connection', tailscale: 'Tailscale', relay: 'Relay connection' };
@@ -34,6 +34,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [session, setSession] = useState<{ device: Device; info: HostInfo } | null>(null);
   const noticeTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const announcedUpdate = useRef('');
 
   const notify = useCallback((text: string, kind: Notice['kind'] = 'success') => {
     clearTimeout(noticeTimeout.current);
@@ -49,6 +50,20 @@ export default function App() {
   }, []);
 
   useEffect(() => { void load(); return () => clearTimeout(noticeTimeout.current); }, [load]);
+  useEffect(() => {
+    if (isBrowserPreview) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const update = await api.getUpdates();
+        if (active && update.phase === 'ready' && update.availableVersion !== announcedUpdate.current) {
+          announcedUpdate.current = update.availableVersion ?? '';
+          notify(`Remoter ${update.availableVersion} is ready. Open Updates to install when your sessions are finished.`);
+        }
+      } catch { /* The Updates page displays check and download failures. */ }
+    }, 2500);
+    return () => { active = false; clearInterval(timer); };
+  }, [notify]);
   useEffect(() => {
     if (!state.hostRunning) return;
     let active = true;
@@ -104,7 +119,7 @@ export default function App() {
         <span className="brand-mark"><PanelsTopLeft size={20} strokeWidth={1.8} /></span><span>Remoter<span className="brand-period">.</span></span>
       </a>
       {!session && <nav className="main-nav" aria-label="Main navigation">
-        {([{ key: 'devices', label: 'Devices', icon: Monitor }, { key: 'network', label: 'Network', icon: Network }, { key: 'activity', label: 'Activity', icon: Activity }] as const).map(({ key, label, icon: Icon }) =>
+        {([{ key: 'devices', label: 'Devices', icon: Monitor }, { key: 'network', label: 'Network', icon: Network }, { key: 'activity', label: 'Activity', icon: Activity }, { key: 'updates', label: 'Updates', icon: Download }] as const).map(({ key, label, icon: Icon }) =>
           <button key={key} className={`nav-item${page === key ? ' active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => setPage(key)}><Icon size={16} />{label}</button>,
         )}
       </nav>}
@@ -141,6 +156,7 @@ export default function App() {
             </>}
 
             {page === 'network' && <NetworkPanel network={state.network} onSave={async (settings) => { const next = await api.saveNetwork(settings); setState(next); notify(isBrowserPreview ? 'Preview settings updated. Nothing was saved to your system.' : 'Connection settings saved.'); }} />}
+            {page === 'updates' && <UpdatesPanel sharing={state.hostRunning} />}
 
             {page === 'activity' && <>
               <div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Recent activity</h1><p>Connections and changes in this workspace.</p></div><span className="quiet-label">Stored on this computer</span></div>
@@ -162,6 +178,36 @@ export default function App() {
 }
 
 function ArrowUpRightIcon() { return <ArrowRight className="connect-arrow" size={14} />; }
+
+function UpdatesPanel({ sharing }: { sharing: boolean }) {
+  const [state, setState] = useState<UpdateState | null>(null);
+  const [error, setError] = useState('');
+  const [installing, setInstalling] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => { try { const next = await api.getUpdates(); if (active) setState(next); } catch (e) { if (active) setError(errorMessage(e)); } };
+    void refresh(); const timer = setInterval(() => void refresh(), 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  const busy = state?.phase === 'checking' || state?.phase === 'downloading';
+  return <>
+    <div className="page-heading"><div><span className="eyebrow">PREFERENCES</span><h1>App updates</h1><p>Keep Remoter current across your computers.</p></div></div>
+    <section className="settings-section" aria-label="App updates">
+      <div className="settings-heading"><h2>Remoter {state?.currentVersion ?? ''}</h2><p>Checks Jack PC, GPD PC, and GitHub. Matching LAN downloads are preferred.</p></div>
+      <p role="status">{state?.message ?? 'Loading update status…'}</p>
+      {state?.availableVersion && <p className="field-help">Version {state.availableVersion}{state.source ? ` · ${state.source}` : ''}</p>}
+      {state?.phase === 'downloading' && <progress aria-label="Update download" value={state.progress ?? 0} max={100} style={{ width: '100%', marginTop: 16 }} />}
+      {state?.notes && <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, marginTop: 20 }}>{state.notes}</p>}
+      {sharing && <p className="settings-note"><Info size={14} />Stop sharing before installing an update.</p>}
+      <p className="field-help" style={{ marginTop: 16 }}>New releases download and verify in the background. Installing closes Remoter and opens the setup wizard. Your paired devices and settings are kept.</p>
+      {error && <div className="inline-error" role="alert">{error}</div>}
+      <div className="settings-actions">
+        <button className="button" disabled={!state || busy || installing || state.phase === 'unsupported'} onClick={async () => { setError(''); try { setState(await api.checkUpdates()); } catch (e) { setError(errorMessage(e)); } }}>{busy ? <Spinner /> : <Download size={15} />}Check for updates</button>
+        {state?.phase === 'ready' && <button className="button primary" disabled={sharing || installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>}
+      </div>
+    </section>
+  </>;
+}
 
 function Modal({ title, children, onClose, busy = false }: { title: string; children: ReactNode; onClose: () => void; busy?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);

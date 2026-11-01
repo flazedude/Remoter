@@ -1,6 +1,6 @@
 {
   "name": "remoter",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "An open-source remote desktop application powered by Remoter Engine.",
   "license": "Apache-2.0",
@@ -32,7 +32,9 @@
     "test:native": "cd native && go test ./...",
     "runtime": "tsx scripts/runtime.ts",
     "package": "npm run build:native && npm run build && npm run runtime && electron-builder --dir",
-    "dist": "npm run build:native && npm run build && npm run runtime && electron-builder"
+    "dist": "npm run build:native && npm run build && npm run runtime && electron-builder",
+    "stage:lan": "tsx scripts/stage-lan-setup.ts",
+    "publish:release": "npm run typecheck && npm test && npm run test:native && npm run dist && npm run stage:lan && npm run test:integration && npm run test:desktop && tsx scripts/publish-update.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -68,8 +70,21 @@
     ],
     "win": {
       "target": [
+        "nsis",
         "portable"
       ]
+    },
+    "nsis": {
+      "artifactName": "Remoter-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "selectPerMachineByDefault": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Remoter-Portable-${version}-${arch}.${ext}"
     },
     "mac": {
       "target": [

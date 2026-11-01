@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { EngineClient, parseInvitation, type Invitation, type RouteSettings } from '@remoter/engine';
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
+import { UpdateManager } from './update-client.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
@@ -23,6 +24,10 @@ const clients = new Map<string, EngineClient>();
 const inflightFrames = new Set<string>();
 const inputQueues = new Map<string, InputQueue>();
 let rendererURL = '';
+let updates: UpdateManager;
+let updateTimer: ReturnType<typeof setInterval> | undefined;
+let installingUpdate = false;
+let pendingSessionStarts = 0;
 
 function text(value: unknown, name: string, max = 2048): string {
   if (typeof value !== 'string' || value.length > max) throw new Error(`Invalid ${name}.`);
@@ -208,10 +213,29 @@ function registerIPC() {
   function handle(name: string, handler: (...args: unknown[]) => unknown) {
     ipcMain.handle(`remoter:${name}`, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererURL) throw new Error('Untrusted application frame.');
+      if (name === 'connect' || name === 'startHost') {
+        if (installingUpdate) throw new Error('Remoter is closing to install an update.');
+        pendingSessionStarts++;
+        return Promise.resolve().then(() => handler(...args)).finally(() => { pendingSessionStarts--; });
+      }
       return handler(...args);
     });
   }
   handle('getState', publicState);
+  handle('getUpdates', () => updates.snapshot());
+  handle('checkUpdates', () => updates.check());
+  handle('installUpdate', async () => {
+    if (host || clients.size || pendingSessionStarts) throw new Error('Stop sharing and disconnect remote sessions before installing an update.');
+    if (installingUpdate) throw new Error('The update installer is already starting.');
+    installingUpdate = true;
+    try {
+      const installer = await updates.installer();
+      const child = spawn(installer, [], { detached: true, stdio: 'ignore', windowsHide: false });
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      child.unref();
+      setTimeout(() => app.quit(), 200);
+    } catch (error) { installingUpdate = false; throw error; }
+  });
   handle('addDevice', async raw => {
     const invitation = parseInvitation(text(raw, 'invitation', 16384));
     const id = createHash('sha256').update(invitation.certificate).digest('hex').slice(0, 32);
@@ -221,7 +245,7 @@ function registerIPC() {
     audit(invitation.name, existing ? 'Pairing updated' : 'Device paired'); await persist(); return publicState();
   });
   handle('removeDevice', async raw => { const device = findDevice(raw); await disconnect(device.id); store.devices = store.devices.filter(d => d.id !== device.id); audit(device.name, 'Device removed from this controller'); await persist(); return publicState(); });
-  handle('saveNetwork', async raw => { const settings = validateNetwork(raw); await disconnectAll(); store.network = settings; audit('This computer', 'Connection settings updated'); await persist(); return publicState(); });
+  handle('saveNetwork', async raw => { const settings = validateNetwork(raw); updates.setProxyEnabled(settings.proxyEnabled); await disconnectAll(); store.network = settings; audit('This computer', 'Connection settings updated'); await persist(); return publicState(); });
   handle('testDevice', async raw => { const device = findDevice(raw), client = makeClient(device); try { const info = await client.info(); device.status = 'ready'; return info; } catch (error) { device.status = 'offline'; throw error; } finally { client.close(); } });
   handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); const client = makeClient(device); try { const info = await client.info(); clients.set(device.id, client); device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
   handle('frame', async raw => {
@@ -249,7 +273,9 @@ function registerIPC() {
 app.whenReady().then(async () => {
   if (process.env.REMOTER_USER_DATA && !app.isPackaged) app.setPath('userData', path.resolve(process.env.REMOTER_USER_DATA));
   statePath = path.join(app.getPath('userData'), 'devices.encrypted');
+  updates = new UpdateManager({ currentVersion: app.getVersion(), cacheDirectory: path.join(app.getPath('userData'), 'updates'), enabled: app.isPackaged && process.platform === 'win32' && process.arch === 'x64' });
   await loadStore();
+  if (store.network.proxyEnabled) updates.setProxyEnabled(true);
   const indexPath = path.join(__dirname, 'renderer', 'index.html');
   rendererURL = !app.isPackaged && process.env.REMOTER_DEV_URL === 'http://127.0.0.1:5173' ? `${process.env.REMOTER_DEV_URL}/` : pathToFileURL(indexPath).href;
   window = new BrowserWindow({ title: 'Remoter', width: 1120, height: 790, minWidth: 750, minHeight: 560, show: false, backgroundColor: '#f8fafc', autoHideMenuBar: true,
@@ -262,6 +288,10 @@ app.whenReady().then(async () => {
   registerIPC();
   window.once('ready-to-show', () => { if (app.isPackaged || process.env.REMOTER_TEST_HIDE !== '1') window?.show(); });
   await window.loadURL(rendererURL);
+  if (app.isPackaged && process.platform === 'win32' && process.arch === 'x64') {
+    setTimeout(() => void updates.check(), 10000).unref();
+    updateTimer = setInterval(() => void updates.check(), 30 * 60 * 1000); updateTimer.unref();
+  }
   window.on('closed', () => { window = null; });
 }).catch(error => { console.error('Remoter startup failed:', error instanceof Error ? error.message : 'Unknown error'); app.quit(); });
 
@@ -270,6 +300,7 @@ let quitting = false;
 app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
+  clearInterval(updateTimer);
   Promise.race([disconnectAll(), new Promise(resolve => setTimeout(resolve, 1500))]).finally(async () => {
     if (host) await endHost(host); host = null; app.quit();
   });

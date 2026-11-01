@@ -17,6 +17,8 @@ const unavailable = async (): Promise<never> => {
 
 // The browser preview never invents devices, sessions, or host capabilities.
 const previewAPI: RemoterAPI = {
+  getUpdates: async () => ({ phase: 'unsupported', currentVersion: 'Preview', message: 'Open the Windows desktop app to check for updates.' }),
+  checkUpdates: unavailable, installUpdate: unavailable,
   getState: async () => structuredClone(previewState),
   saveNetwork: async (network) => {
     previewState = { ...previewState, network: { ...network, proxyPassword: '', relayToken: '' } };

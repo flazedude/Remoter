@@ -77,7 +77,7 @@ npm run test:desktop
 npm run package
 ```
 
-`package` creates an unpacked app for the current platform. `dist` builds the configured Windows portable application or macOS disk image. Signing and macOS notarization require the publisher's credentials and are not configured by this repository. Build on the target OS; the CI workflow includes Windows and macOS native builds and tests.
+`package` creates an unpacked app for the current platform. `npm run dist` builds a Windows setup wizard and portable application, or a macOS disk image, in `release/`. On Windows, run `Remoter-Setup-<version>-x64.exe` to install the app with shortcuts and an uninstaller; the wizard defaults to installing for the current user and lets you choose the installation folder. Use `Remoter-Portable-<version>-x64.exe` to run without installing. Signing and macOS notarization require the publisher's credentials and are not configured by this repository. Build on the target OS; the CI workflow includes Windows and macOS native builds and tests.
 
 ## Current boundaries
 
@@ -87,7 +87,8 @@ npm run package
 - Pairing is per device, with a revocable device token. Central accounts, MFA, per-operator capabilities, short-lived grants, and fleet policies are planned.
 - Concurrent controllers of one host share input state; use one controlling session per host during the alpha.
 - Activity history belongs to the local controller; it is not an independent security audit trail.
-- No file transfer, remote clipboard sync, audio, session recording, auto-update, or fleet jobs yet.
+- Windows x64 releases support signed updates from LAN mirrors and GitHub, with user-triggered installation. See [updates and LAN setup](docs/updates.md). macOS updates are not implemented.
+- No file transfer, remote clipboard sync, audio, session recording, or fleet jobs yet.
 
 See [Roadmap](ROADMAP.md), [protocol](docs/protocol.md), and [contributing](CONTRIBUTING.md).
 

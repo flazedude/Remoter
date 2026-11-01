@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 const invoke = (name: string, ...args: unknown[]) => ipcRenderer.invoke(`remoter:${name}`, ...args);
 contextBridge.exposeInMainWorld('remoter', {
+  getUpdates: () => invoke('getUpdates'),
+  checkUpdates: () => invoke('checkUpdates'),
+  installUpdate: () => invoke('installUpdate'),
   getState: () => invoke('getState'),
   addDevice: (invitation: string) => invoke('addDevice', invitation),
   removeDevice: (id: string) => invoke('removeDevice', id),

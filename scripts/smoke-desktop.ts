@@ -22,8 +22,15 @@ try {
   let page = await application.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('heading', { name: 'Your devices', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Updates', exact: true }).click();
+  await page.getByRole('heading', { name: 'App updates', exact: true }).waitFor();
+  await page.getByText('Updates are available in the Windows desktop release.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Check for updates', exact: true }).isDisabled().then(disabled => assert.equal(disabled, true));
+  await page.screenshot({ path: path.join(resultDir, 'desktop-updates.png') });
+  await page.getByRole('button', { name: 'Devices', exact: true }).click();
   await page.screenshot({ path: path.join(resultDir, 'desktop-home.png') });
   invitation = await page.evaluate(async () => (await window.remoter!.startHost({ allowInput: true, listen: '127.0.0.1:0', advertise: '' })).invitation);
+  await assert.rejects(page.evaluate(() => window.remoter!.installUpdate()), /Stop sharing and disconnect/);
   await page.getByRole('button', { name: 'Add device', exact: true }).click();
   await page.getByLabel('Device invitation').fill(invitation);
   await page.getByRole('dialog').getByRole('button', { name: 'Add device', exact: true }).click();

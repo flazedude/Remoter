@@ -30,6 +30,17 @@ export interface ActivityItem {
   action: string;
 }
 
+export interface UpdateState {
+  phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error' | 'unsupported';
+  currentVersion: string;
+  availableVersion?: string;
+  source?: string;
+  notes?: string;
+  progress?: number;
+  checkedAt?: string;
+  message: string;
+}
+
 export interface AppState {
   devices: Device[];
   network: NetworkSettings;
@@ -67,6 +78,9 @@ export type RemoteInput =
   | { type: 'releaseAll' };
 
 export interface RemoterAPI {
+  getUpdates(): Promise<UpdateState>;
+  checkUpdates(): Promise<UpdateState>;
+  installUpdate(): Promise<void>;
   getState(): Promise<AppState>;
   addDevice(invitation: string): Promise<AppState>;
   removeDevice(id: string): Promise<AppState>;

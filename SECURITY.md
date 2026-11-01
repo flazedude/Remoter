@@ -19,6 +19,8 @@ Stop the host to immediately stop access. Restart with `--rotate-token` to inval
 
 Closing the desktop stops its child host. Hosts launched separately keep running until their process is stopped. No stealth installation, persistence, firewall exceptions, or elevated service is installed automatically.
 
+The separate, explicitly invoked LAN update-host setup installs a visible `Remoter LAN Updates` scheduled task and a LocalSubnet-scoped firewall rule on port 17846. It serves publisher-signed installers, not remote desktop sessions. Updates use an embedded Ed25519 public key and signed installer size/SHA-256 checks; installation requires a user action after sessions stop. Private publisher keys remain outside the project and its shared copy. See [update trust and deployment](docs/updates.md).
+
 ## Reporting vulnerabilities
 
 Do not post invitations, tokens, private keys, or sensitive screen captures in public issues. Once the repository is published, use GitHub private vulnerability reporting if enabled. Until a private reporting channel is configured, contact the repository owner privately before sharing exploit details. Never claim a vulnerability is fixed without a regression test and a verified affected-version assessment.
