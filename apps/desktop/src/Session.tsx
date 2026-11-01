@@ -262,7 +262,14 @@ export default function Session({ device, info, network, disconnecting, onDiscon
           // a fresh remote copy with stale local text before the next sync poll.
           inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(() => { stopControl(); });
         }
-        if (event.code) void send({ type: 'key', code: event.code, down: true });
+        if (event.code) {
+          const sent = send({ type: 'key', code: event.code, down: true });
+          if (sharing.clipboard && ['KeyC', 'KeyX'].includes(event.code) && (event.ctrlKey || event.metaKey) && !event.repeat) {
+            // Copy is processed asynchronously by the target app. Fetch its new
+            // clipboard as soon as it changes, without delaying key releases.
+            void sent.then(() => sharing.transferClipboard('copy')).catch(() => {});
+          }
+        }
       }}
       onKeyUp={(event) => { if (!controlRef.current) return; event.preventDefault(); event.stopPropagation(); if (event.code) void send({ type: 'key', code: event.code, down: false }); }}>
       {frame && <img className="desktop-frame" src={frame} alt={`Remote display of ${device.name}`} draggable={false} onLoad={() => {

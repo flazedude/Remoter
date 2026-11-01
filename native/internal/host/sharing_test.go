@@ -1,14 +1,87 @@
 package host
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flazedude/Remoter/native/internal/platform"
 )
+
+type observedClipboard struct {
+	platform.Sharing
+	read chan struct{}
+}
+
+func (s *observedClipboard) ReadClipboard() (string, error) {
+	text, err := s.Sharing.ReadClipboard()
+	select {
+	case s.read <- struct{}{}:
+	default:
+	}
+	return text, err
+}
+
+func TestClipboardWaitsForCopyAndCancels(t *testing.T) {
+	s := &observedClipboard{Sharing: platform.NewSynthetic(), read: make(chan struct{}, 1)}
+	s.WriteClipboard("old invitation")
+	h, err := NewHandler(Config{Token: testToken, Synthetic: true, AllowClipboard: true, Sharing: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	path := fmt.Sprintf("/v1/clipboard?after=%x", sha256.Sum256([]byte("old invitation")))
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() { result <- request(h, "GET", path, "", testToken) }()
+	select {
+	case <-s.read:
+	case <-time.After(time.Second):
+		t.Fatal("clipboard request never read the baseline")
+	}
+	select {
+	case <-result:
+		t.Fatal("clipboard returned stale text before the target app copied")
+	default:
+	}
+	s.WriteClipboard("newly copied: 你好 👋")
+	select {
+	case response := <-result:
+		var value map[string]string
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &value) != nil || value["text"] != "newly copied: 你好 👋" {
+			t.Fatal("copy wait did not return the new text")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("clipboard did not return the new copy promptly")
+	}
+	for _, revision := range []string{"abc", strings.Repeat("g", 64)} {
+		if w := request(h, "GET", "/v1/clipboard?after="+revision, "", testToken); w.Code != 400 {
+			t.Fatal("invalid clipboard revision accepted")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest("GET", fmt.Sprintf("/v1/clipboard?after=%x", sha256.Sum256([]byte("newly copied: 你好 👋"))), nil).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(httptest.NewRecorder(), r); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled clipboard wait did not stop")
+	}
+	// Copying the same text or a target app declining Copy must still finish.
+	start := time.Now()
+	w := request(h, "GET", r.URL.String(), "", testToken)
+	if w.Code != 200 || time.Since(start) > time.Second {
+		t.Fatal("unchanged clipboard wait was not bounded")
+	}
+}
 
 func TestSharingPermissionsAndTextRoundTrip(t *testing.T) {
 	h, err := NewHandler(Config{Token: testToken, Synthetic: true, AllowClipboard: true, AllowAudio: true})

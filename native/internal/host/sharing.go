@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -144,7 +146,41 @@ func (h *Handler) clipboard(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "GET":
+		after := r.URL.Query().Get("after")
+		var previous [32]byte
+		if after != "" {
+			decoded, err := hex.DecodeString(after)
+			if err != nil || len(decoded) != len(previous) {
+				fail(w, 400, "invalid clipboard revision")
+				return
+			}
+			copy(previous[:], decoded)
+		}
 		text, err := h.cfg.Sharing.ReadClipboard()
+		if err == nil && after != "" {
+			// SendInput can return before the target app processes Copy/Cut.
+			// Wait briefly for new text rather than returning its old clipboard.
+			deadline := time.NewTimer(400 * time.Millisecond)
+			defer deadline.Stop()
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+		wait:
+			for sha256.Sum256([]byte(text)) == previous {
+				select {
+				case <-h.stop:
+					return
+				case <-r.Context().Done():
+					return
+				case <-deadline.C:
+					break wait
+				case <-ticker.C:
+					text, err = h.cfg.Sharing.ReadClipboard()
+					if err != nil {
+						break wait
+					}
+				}
+			}
+		}
 		if err != nil {
 			fail(w, 503, err.Error())
 			return

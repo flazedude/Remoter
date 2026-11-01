@@ -145,7 +145,7 @@ try {
   const clipboardClient = new EngineClient(parseInvitation(invitation));
   try {
     await clipboardClient.writeClipboard('old host clipboard');
-    // Stop the 600-ms clipboard poll to reproduce Copy -> Paste before it runs.
+    // Stop clipboard polling to exercise the keyboard-triggered transfers.
     const clockTime = new Date('2026-01-01T00:00:00Z');
     await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(new Date(clockTime.getTime() + 1000));
@@ -165,6 +165,21 @@ try {
       await page.evaluate(async () => window.remoter!.clipboardSync({ deviceId: (await window.remoter!.getState()).devices[0].id, direction: 'both' }));
       assert.equal(await clipboardClient.readClipboard(), text, 'Paste must preserve a new host copy instead of sending the stale invitation');
       assert.equal(await application.evaluate(() => (globalThis as any).testClipboard.text), text);
+    }
+    // Synthetic app copies use extra API writes; let the host's one-second
+    // clipboard request budget reset before the separate Copy/Cut scenarios.
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    for (const key of ['c', 'x']) {
+      const text = `Remote ${key === 'c' ? 'copy' : 'cut'} to local: 你好 👋`;
+      // A real target app updates its clipboard after input injection returns.
+      const copied = new Promise<void>((resolve, reject) => { setTimeout(() => { void clipboardClient.writeClipboard(text).then(resolve, reject); }, 50); });
+      await Promise.all([remoteScreen.press(`Control+${key}`), copied]);
+      const local: string = await application.evaluate(async (_electron, expected: string) => {
+        const deadline = Date.now() + 1500;
+        while ((globalThis as any).testClipboard.text !== expected && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+        return (globalThis as any).testClipboard.text;
+      }, text);
+      assert.equal(local, text, 'Remote Copy/Cut must update the local clipboard without waiting for the background poll or another paste');
     }
     const localCopy = 'Copied locally: 中文 🚀\nsecond line';
     await application.evaluate((_electron, text) => { (globalThis as any).testClipboard.text = text; }, localCopy);

@@ -65,7 +65,7 @@ export function useSharing(deviceId: string, closing: boolean) {
     return () => { active = false; void context.close().catch(() => {}); if (audioContext.current === context) audioContext.current = null; };
   }, [sound, closing, deviceId]);
 
-  const transferClipboard = useCallback(async (direction: 'send' | 'receive' | 'paste') => {
+  const transferClipboard = useCallback(async (direction: 'send' | 'receive' | 'paste' | 'copy') => {
     try { await api.clipboardSync({ deviceId, direction }); setError(''); }
     catch (error) { setError(`Clipboard: ${errorMessage(error)}`); throw error; }
   }, [deviceId]);
@@ -77,7 +77,7 @@ export function useSharing(deviceId: string, closing: boolean) {
     async function poll() {
       try { await api.clipboardSync({ deviceId, direction: 'both' }); }
       catch (error) { if (active) { setError(`Clipboard: ${errorMessage(error)}`); setClipboard(false); } return; }
-      if (active) timer = setTimeout(() => void poll(), 600);
+      if (active) timer = setTimeout(() => void poll(), 150);
     }
     void api.clipboardSync({ deviceId, direction: 'reset' }).then(() => { if (active) void poll(); }).catch(error => { if (active) { setError(errorMessage(error)); setClipboard(false); } });
     return () => { active = false; clearTimeout(timer); };

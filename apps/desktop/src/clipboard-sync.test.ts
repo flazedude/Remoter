@@ -30,3 +30,8 @@ test('paste honors clipboard clears and keeps local-copy priority for simultaneo
   assert.equal(clipboardTransfer('paste', 'local copy', '', previous), 'receive');
   assert.equal(clipboardTransfer('paste', 'new local copy', 'new host copy', previous), 'send');
 });
+
+test('an explicit remote Copy or Cut receives host text even when the local clipboard also changed', () => {
+  assert.equal(clipboardTransfer('copy', 'older local copy', 'fresh remote copy', { local: 'old local', remote: 'old host' }), 'receive');
+  assert.equal(clipboardTransfer('copy', 'old local', '', { local: 'old local', remote: 'old host' }), 'receive');
+});

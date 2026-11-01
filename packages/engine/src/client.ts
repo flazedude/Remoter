@@ -105,8 +105,9 @@ export class EngineClient {
     return { ...invitation, endpoint: this.endpoint.origin };
   }
 
-  async readClipboard(): Promise<string> {
-    const { body } = await this.request('GET', '/v1/clipboard', undefined, 6 * 1024 * 1024 + 64);
+  async readClipboard(after?: string): Promise<string> {
+    if (after !== undefined && !/^[a-f0-9]{64}$/.test(after)) throw new Error('Invalid clipboard revision.');
+    const { body } = await this.request('GET', `/v1/clipboard${after ? `?after=${after}` : ''}`, undefined, 6 * 1024 * 1024 + 64);
     const value = JSON.parse(body.toString('utf8'));
     if (typeof value.text !== 'string' || Buffer.byteLength(value.text) > 1024 * 1024 || value.text.includes('\0')) throw new Error('Invalid clipboard text from host.');
     return value.text;
