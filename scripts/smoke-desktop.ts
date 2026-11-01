@@ -77,6 +77,7 @@ try {
     await page.screenshot({ path: path.join(resultDir, 'desktop-discovered-hosts.png') });
     await page.getByRole('button', { name: 'Add & connect', exact: true }).click();
     await page.getByRole('img', { name: 'Remote display of Remoter test display' }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).isDisabled(), true);
     assert.equal((await page.evaluate(() => window.remoter!.getState())).devices[0].pairing, 'lan');
     await page.getByRole('button', { name: 'Disconnect and return to devices' }).click();
     await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
@@ -89,7 +90,7 @@ try {
   await page.getByRole('button', { name: 'Scan again', exact: true }).waitFor();
   await page.screenshot({ path: path.join(resultDir, 'desktop-discovery.png') });
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
-  invitation = await page.evaluate(async () => (await window.remoter!.startHost({ allowInput: true, allowAudio: true, listen: '127.0.0.1:0', advertise: '' })).invitation);
+  invitation = await page.evaluate(async () => (await window.remoter!.startHost({ allowInput: true, allowAudio: true, allowClipboard: true, listen: '127.0.0.1:0', advertise: '' })).invitation);
   await application.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('remoter:getUpdates');
     ipcMain.handle('remoter:getUpdates', () => ({ currentVersion: 'test', availableVersion: 'test-next', phase: 'ready', message: 'Synthetic ready state; no executable is provided.' }));
@@ -120,7 +121,7 @@ try {
   const dimensions = await display.evaluate((image: HTMLImageElement) => ({ width: image.naturalWidth, height: image.naturalHeight }));
   assert.ok(dimensions.width >= 320 && dimensions.height >= 180);
   const remoteScreen = page.locator('.remote-screen');
-  assert.equal(await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).isDisabled(), false);
   await page.getByRole('button', { name: 'Hear host sound', exact: true }).click();
   await page.getByRole('button', { name: 'Mute host sound', exact: true }).waitFor();
   await page.waitForTimeout(350);
@@ -132,6 +133,50 @@ try {
   assert.equal(await remoteScreen.evaluate(element => getComputedStyle(element).cursor), 'default');
   await page.waitForFunction(() => Number(document.querySelector('.capture-cadence')?.textContent?.match(/^(\d+) FPS/)?.[1]) >= 15, undefined, { timeout: 20000 });
   const cadence = await page.locator('.capture-cadence').innerText();
+  // The host clipboard is synthetic. Stub Electron's local clipboard too, so
+  // these copy/paste checks never read or modify the user's real clipboard.
+  await application.evaluate(({ clipboard }) => {
+    const originalRead = clipboard.readText, originalWrite = clipboard.writeText;
+    const state = { text: 'stale-invitation-' + 'a1b2c3'.repeat(1000), originalRead, originalWrite };
+    (globalThis as any).testClipboard = state;
+    clipboard.readText = async () => state.text;
+    clipboard.writeText = async (text: string) => { state.text = text; };
+  });
+  const clipboardClient = new EngineClient(parseInvitation(invitation));
+  try {
+    await clipboardClient.writeClipboard('old host clipboard');
+    // Stop the 600-ms clipboard poll to reproduce Copy -> Paste before it runs.
+    const clockTime = new Date('2026-01-01T00:00:00Z');
+    await page.clock.install({ time: clockTime });
+    await page.clock.pauseAt(clockTime);
+    await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).click();
+    await page.evaluate(async () => {
+      const deviceId = (await window.remoter!.getState()).devices[0].id;
+      await window.remoter!.clipboardSync({ deviceId, direction: 'both' });
+    });
+    for (const text of ['Text copied on the host: 你好 👋\nCafé — 日本語', 'another short copy']) {
+      await clipboardClient.writeClipboard(text);
+      await remoteScreen.press('Control+v');
+      // Drain clipboard work queued by the paste shortcut before asserting.
+      await page.evaluate(async () => window.remoter!.clipboardSync({ deviceId: (await window.remoter!.getState()).devices[0].id, direction: 'both' }));
+      assert.equal(await clipboardClient.readClipboard(), text, 'Paste must preserve a new host copy instead of sending the stale invitation');
+      assert.equal(await application.evaluate(() => (globalThis as any).testClipboard.text), text);
+    }
+    const localCopy = 'Copied locally: 中文 🚀\nsecond line';
+    await application.evaluate((_electron, text) => { (globalThis as any).testClipboard.text = text; }, localCopy);
+    await remoteScreen.press('Control+v');
+    await page.evaluate(async () => window.remoter!.clipboardSync({ deviceId: (await window.remoter!.getState()).devices[0].id, direction: 'both' }));
+    assert.equal(await clipboardClient.readClipboard(), localCopy, 'Paste must send newly copied local text before forwarding the key');
+    await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).click();
+    await page.clock.resume();
+  } finally {
+    clipboardClient.close();
+    await application.evaluate(({ clipboard }) => {
+      clipboard.readText = (globalThis as any).testClipboard.originalRead;
+      clipboard.writeText = (globalThis as any).testClipboard.originalWrite;
+      delete (globalThis as any).testClipboard;
+    });
+  }
   await remoteScreen.press('Escape');
   await page.getByRole('button', { name: 'View only', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 0);
@@ -259,7 +304,7 @@ try {
   await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
   assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, false, 'Stop sharing must suppress boot sharing');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, pairingRestored: true, encryptedStorage: true, credentialScope: true, updateSessionRestored: true, updateLANAccessRetained: true, updateHandoffConsumed: true, startupSharingRestored: true, startupStopRetained: true, errors }));
+  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, clipboardCopiesPreserved: true, pairingRestored: true, encryptedStorage: true, credentialScope: true, updateSessionRestored: true, updateLANAccessRetained: true, updateHandoffConsumed: true, startupSharingRestored: true, startupStopRetained: true, errors }));
 } finally {
   if (application) await application.close();
 }
