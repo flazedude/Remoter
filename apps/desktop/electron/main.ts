@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, type Invitation, type RouteSettings } from '@remoter/engine';
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
+import { clipboardTransfer, type ClipboardDirection } from './clipboard-sync.js';
 import { UpdateManager } from './update-client.js';
 import { UpdateInstallation, updateResume, launchWindowsUpdate, type HostOptions, type UpdateResume } from './update-installation.js';
 import { setStartup, startupSharing, type StartupStore } from './startup.js';
@@ -328,18 +329,16 @@ function registerIPC() {
   handle('clipboardSync', raw => {
     const options = record(raw), id = findDevice(options.deviceId).id, client = clients.get(id);
     if (!client) throw new Error('Start a session first.');
-    if (!['send', 'receive', 'both', 'reset'].includes(String(options.direction))) throw new Error('Invalid clipboard direction.');
+    if (!['send', 'receive', 'both', 'paste', 'reset'].includes(String(options.direction))) throw new Error('Invalid clipboard direction.');
     const pending = (clipboardQueues.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (clients.get(id) !== client) return;
       if (options.direction === 'reset') { clipboardStates.delete(id); return; }
       let local = await clipboard.readText(), remote = await client.readClipboard();
       if (clients.get(id) !== client) return;
       if (Buffer.byteLength(local) > 1024 * 1024) throw new Error('Clipboard text exceeds 1 MiB.');
-      const previous = clipboardStates.get(id);
-      const send = options.direction === 'send' || (options.direction === 'both' && previous && local.length > 0 && local !== previous.local);
-      const receive = options.direction === 'receive' || (options.direction === 'both' && previous && remote.length > 0 && remote !== previous.remote);
-      if (send && local !== remote) { await client.writeClipboard(local); remote = local; }
-      else if (receive && local !== remote) {
+      const transfer = clipboardTransfer(options.direction as ClipboardDirection, local, remote, clipboardStates.get(id));
+      if (transfer === 'send') { await client.writeClipboard(local); remote = local; }
+      else if (transfer === 'receive') {
         // Do not overwrite text copied locally while the network request ran.
         if (clients.get(id) !== client || await clipboard.readText() !== local) return;
         await clipboard.writeText(remote); local = remote;

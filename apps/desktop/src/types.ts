@@ -104,7 +104,7 @@ export interface RemoterAPI {
   frame(options: { deviceId: string; displayId: number; quality: number; width: number }): Promise<string>;
   input(options: { deviceId: string; event: RemoteInput }): Promise<void>;
   audio(options: { deviceId: string; after: number }): Promise<AudioPacket>;
-  clipboardSync(options: { deviceId: string; direction: 'send' | 'receive' | 'both' | 'reset' }): Promise<void>;
+  clipboardSync(options: { deviceId: string; direction: 'send' | 'receive' | 'both' | 'paste' | 'reset' }): Promise<void>;
   disconnect(id: string): Promise<AppState>;
   startHost(options: { allowInput: boolean; listen: string; advertise: string; discover?: boolean; easyLAN?: boolean; allowClipboard?: boolean; allowAudio?: boolean }): Promise<{ invitation: string }>;
   stopHost(): Promise<void>;

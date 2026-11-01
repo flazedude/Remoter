@@ -148,12 +148,16 @@ try {
     // Stop the 600-ms clipboard poll to reproduce Copy -> Paste before it runs.
     const clockTime = new Date('2026-01-01T00:00:00Z');
     await page.clock.install({ time: clockTime });
-    await page.clock.pauseAt(clockTime);
+    await page.clock.pauseAt(new Date(clockTime.getTime() + 1000));
     await page.getByRole('button', { name: 'Sync text clipboard', exact: true }).click();
     await page.evaluate(async () => {
       const deviceId = (await window.remoter!.getState()).devices[0].id;
       await window.remoter!.clipboardSync({ deviceId, direction: 'both' });
     });
+    const firstLocalCopy = await application.evaluate(() => (globalThis as any).testClipboard.text);
+    await remoteScreen.press('Control+v');
+    await page.evaluate(async () => window.remoter!.clipboardSync({ deviceId: (await window.remoter!.getState()).devices[0].id, direction: 'both' }));
+    assert.equal(await clipboardClient.readClipboard(), firstLocalCopy, 'The first paste must still send text copied before enabling sync');
     for (const text of ['Text copied on the host: 你好 👋\nCafé — 日本語', 'another short copy']) {
       await clipboardClient.writeClipboard(text);
       await remoteScreen.press('Control+v');

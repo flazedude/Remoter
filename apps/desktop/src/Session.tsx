@@ -260,7 +260,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
         if (sharing.clipboard && event.code === 'KeyV' && (event.ctrlKey || event.metaKey) && !event.repeat) {
           // Reconcile both sides before paste. An unconditional send can replace
           // a fresh remote copy with stale local text before the next sync poll.
-          inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('both')).catch(() => { stopControl(); });
+          inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(() => { stopControl(); });
         }
         if (event.code) void send({ type: 'key', code: event.code, down: true });
       }}

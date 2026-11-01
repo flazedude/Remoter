@@ -65,7 +65,7 @@ export function useSharing(deviceId: string, closing: boolean) {
     return () => { active = false; void context.close().catch(() => {}); if (audioContext.current === context) audioContext.current = null; };
   }, [sound, closing, deviceId]);
 
-  const transferClipboard = useCallback(async (direction: 'send' | 'receive' | 'both') => {
+  const transferClipboard = useCallback(async (direction: 'send' | 'receive' | 'paste') => {
     try { await api.clipboardSync({ deviceId, direction }); setError(''); }
     catch (error) { setError(`Clipboard: ${errorMessage(error)}`); throw error; }
   }, [deviceId]);
