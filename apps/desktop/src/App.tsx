@@ -224,20 +224,26 @@ function UpdatesPanel() {
     void refresh(); const timer = setInterval(() => void refresh(), 1000);
     return () => { active = false; clearInterval(timer); };
   }, []);
-  const busy = state?.phase === 'checking' || state?.phase === 'downloading';
+  const busy = state?.phase === 'checking' || state?.phase === 'downloading' || state?.phase === 'verifying';
+  const downloadVisible = state?.availableVersion && ['downloading', 'verifying', 'ready'].includes(state.phase);
+  const megabytes = (bytes: number) => `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return <>
     <div className="page-heading"><div><h1>App updates</h1></div></div>
     <section className="settings-section" aria-label="App updates">
       <div className="settings-heading"><h2>Remoter {state?.currentVersion ?? ''}</h2><p>Checks Jack PC, GPD PC, and GitHub. Matching LAN downloads are preferred.</p></div>
-      <p role="status">{state?.message ?? 'Loading update status…'}</p>
+      <p role="status">{installing ? 'Starting the installer… Remoter will restart when it is ready.' : state?.message ?? 'Loading update status…'}</p>
       {state?.availableVersion && <p className="field-help">Version {state.availableVersion}{state.source ? ` · ${state.source}` : ''}</p>}
-      {state?.phase === 'downloading' && <progress aria-label="Update download" value={state.progress ?? 0} max={100} style={{ width: '100%', marginTop: 16 }} />}
+      {downloadVisible && <div className="update-download">
+        <div className="update-download-label"><span>{state.phase === 'ready' ? 'Download complete' : state.phase === 'verifying' ? 'Verifying download…' : 'Downloading update…'}</span><span>{state.progress ?? 0}%</span></div>
+        <progress aria-label="Update download" value={state.progress ?? 0} max={100} />
+        {state.totalBytes !== undefined && <p className="field-help">{megabytes(state.downloadedBytes ?? 0)} of {megabytes(state.totalBytes)}</p>}
+      </div>}
       {state?.notes && <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, marginTop: 20 }}>{state.notes}</p>}
       <p className="field-help" style={{ marginTop: 16 }}>Install anytime, including while sharing or controlling a computer. Remoter updates and reopens automatically, then restores sharing and your session. Connections pause briefly during the restart. Your paired devices and settings are kept.</p>
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="settings-actions">
         <button className="button" disabled={!state || busy || installing || state.phase === 'unsupported'} onClick={async () => { setError(''); try { setState(await api.checkUpdates()); } catch (e) { setError(errorMessage(e)); } }}>{busy ? <Spinner /> : <Download size={15} />}Check for updates</button>
-        {state?.phase === 'ready' && <button className="button primary" disabled={installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>}
+        <button className="button primary" disabled={state?.phase !== 'ready' || installing} onClick={async () => { setInstalling(true); setError(''); try { await api.installUpdate(); } catch (e) { setError(errorMessage(e)); setInstalling(false); } }}>{installing ? <Spinner /> : <Download size={15} />}Install update</button>
       </div>
     </section>
   </>;

@@ -53,7 +53,20 @@ try {
   await page.getByRole('heading', { name: 'App updates', exact: true }).waitFor();
   await page.getByText('Updates are available in the Windows desktop release.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Check for updates', exact: true }).isDisabled().then(disabled => assert.equal(disabled, true));
+  assert.equal(await page.getByRole('button', { name: 'Install update', exact: true }).isDisabled(), true);
   await page.screenshot({ path: path.join(resultDir, 'desktop-updates.png') });
+  for (const phase of ['downloading', 'verifying', 'ready'] as const) {
+    await application.evaluate(({ ipcMain }, phase) => {
+      ipcMain.removeHandler('remoter:getUpdates');
+      ipcMain.handle('remoter:getUpdates', () => ({ currentVersion: 'test', availableVersion: 'test-next', phase, progress: phase === 'downloading' ? 42 : 100, downloadedBytes: phase === 'downloading' ? 42 * 1024 ** 2 : 100 * 1024 ** 2, totalBytes: 100 * 1024 ** 2, message: 'Synthetic update download state.' }));
+    }, phase);
+    const progress = page.getByRole('progressbar', { name: 'Update download', exact: true });
+    await page.getByText(phase === 'downloading' ? 'Downloading update…' : phase === 'verifying' ? 'Verifying download…' : 'Download complete', { exact: true }).waitFor();
+    assert.equal(await progress.getAttribute('value'), phase === 'downloading' ? '42' : '100');
+    assert.equal(await page.getByRole('button', { name: 'Install update', exact: true }).isDisabled(), phase !== 'ready');
+    if (phase === 'downloading') await page.getByText('42.0 MB of 100.0 MB', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(resultDir, `desktop-update-${phase}.png`) });
+  }
   await page.getByRole('button', { name: 'Devices', exact: true }).click();
   await page.screenshot({ path: path.join(resultDir, 'desktop-home.png') });
   const lanListen = await page.evaluate(async () => (await window.remoter!.getState()).hostSuggestedListen);
@@ -83,6 +96,7 @@ try {
   });
   await page.getByRole('button', { name: 'Updates', exact: true }).click();
   const installButton = page.getByRole('button', { name: 'Install update', exact: true });
+  await page.getByText('Synthetic ready state; no executable is provided.', { exact: true }).waitFor();
   assert.equal(await installButton.isEnabled(), true, 'Sharing must not disable installation');
   await installButton.click();
   await page.getByRole('alert').filter({ hasText: 'Download and verify an update first' }).waitFor();
@@ -124,6 +138,7 @@ try {
   await page.getByRole('button', { name: 'View only', exact: true }).click();
   await page.getByRole('button', { name: 'Updates', exact: true }).click();
   await page.getByRole('dialog').getByRole('heading', { name: 'App updates', exact: true }).waitFor();
+  await page.getByText('Synthetic ready state; no executable is provided.', { exact: true }).waitFor();
   assert.equal(await installButton.isEnabled(), true, 'A controlling session must not disable installation');
   await installButton.click();
   await page.getByRole('alert').filter({ hasText: 'Download and verify an update first' }).waitFor();

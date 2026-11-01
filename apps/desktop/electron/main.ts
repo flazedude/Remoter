@@ -10,7 +10,7 @@ import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, 
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
 import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
-import { UpdateInstallation, updateResume, windowsUpdateScript, type HostOptions, type UpdateResume } from './update-installation.js';
+import { UpdateInstallation, updateResume, launchWindowsUpdate, type HostOptions, type UpdateResume } from './update-installation.js';
 import { setStartup, startupSharing, type StartupStore } from './startup.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
@@ -385,13 +385,10 @@ app.whenReady().then(async () => {
       await persist();
     },
     clearResume: async () => { if (store.updateResume) { delete store.updateResume; await persist(); } },
-    launch: async installer => {
-      const script = windowsUpdateScript(process.pid, installer, process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
-      const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-      const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { detached: true, stdio: 'ignore', windowsHide: true });
-      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      child.unref();
-    },
+    launch: installer => launchWindowsUpdate(process.pid, installer, process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, {
+      portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+      logFile: path.join(app.getPath('userData'), 'updates', 'installation.log')
+    }),
     quit: () => { setTimeout(() => app.quit(), 200); }
   });
   const resume = updateResume(store.updateResume, app.getVersion(), process.argv);

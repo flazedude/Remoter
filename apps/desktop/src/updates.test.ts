@@ -60,3 +60,37 @@ test('downloads fall back between matching mirrors, verify cache again before in
     assert.equal((await blocked.check()).phase, 'ready');
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 });
+
+test('a partial background download reports byte progress and cannot be installed', async () => {
+  const m = manifest();
+  let continueDownload!: () => void;
+  const gate = new Promise<void>(resolve => { continueDownload = resolve; });
+  const halfway = Math.floor(installer.length / 2);
+  const server = http.createServer(async (req, res) => {
+    if (req.url?.endsWith('latest.json')) { res.end(envelope(m)); return; }
+    res.write(installer.subarray(0, halfway));
+    await gate;
+    res.end(installer.subarray(halfway));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const cacheDirectory = await mkdtemp(path.join(os.tmpdir(), 'remoter-progress-'));
+  const manager = new UpdateManager({ enabled: true, currentVersion: '0.1.0-alpha.1', cacheDirectory, publicKey, feeds: [`http://127.0.0.1:${address.port}/remoter/latest.json`], github: false });
+  const check = manager.check();
+  try {
+    await assert.rejects(manager.installer(), /Download and verify/);
+    for (let attempt = 0; !manager.snapshot().downloadedBytes && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    const partial = manager.snapshot();
+    assert.equal(partial.phase, 'downloading');
+    assert.equal(partial.downloadedBytes, halfway);
+    assert.equal(partial.totalBytes, installer.length);
+    assert.equal(partial.progress, Math.floor(halfway * 100 / installer.length));
+    await assert.rejects(manager.installer(), /Download and verify/);
+    continueDownload();
+    const ready = await check;
+    assert.equal(ready.phase, 'ready');
+    assert.equal(ready.downloadedBytes, installer.length);
+    assert.equal(ready.progress, 100);
+    assert.deepEqual(await readFile(await manager.installer()), installer);
+  } finally { continueDownload(); await check; await new Promise<void>(resolve => server.close(() => resolve())); }
+});
