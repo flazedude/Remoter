@@ -50,7 +50,51 @@ type Handler struct {
 	audioLimit     limiter
 	audioHub       audioHub
 	audioReaders   chan struct{}
+	prefetched     *pendingCapture // protected by the single frame slot
 }
+
+type captureResult struct {
+	image image.Image
+	err   error
+}
+type pendingCapture struct {
+	display, width int
+	started        time.Time
+	result         chan captureResult
+}
+
+func (h *Handler) capture(display, width int) captureResult {
+	if sized, ok := h.cfg.Backend.(interface {
+		CaptureSized(int, int) (image.Image, error)
+	}); ok {
+		im, err := sized.CaptureSized(display, width)
+		return captureResult{im, err}
+	}
+	im, err := h.cfg.Backend.Capture(display)
+	return captureResult{im, err}
+}
+
+// Keep at most one capture ahead, overlapping capture with JPEG encoding and
+// transfer. No unbounded frame queue or permanent capture loop when paused.
+func (h *Handler) nextCapture(display, width int) (image.Image, error) {
+	var result captureResult
+	if pending := h.prefetched; pending != nil {
+		result = <-pending.result
+		h.prefetched = nil
+		if pending.display != display || pending.width != width || time.Since(pending.started) > 250*time.Millisecond {
+			result = h.capture(display, width)
+		}
+	} else {
+		result = h.capture(display, width)
+	}
+	if result.err == nil && !h.closed.Load() {
+		pending := &pendingCapture{display: display, width: width, started: time.Now(), result: make(chan captureResult, 1)}
+		h.prefetched = pending
+		go func() { pending.result <- h.capture(display, width) }()
+	}
+	return result.image, result.err
+}
+
 type limiter struct {
 	mu    sync.Mutex
 	since time.Time
@@ -261,7 +305,7 @@ func (h *Handler) frame(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "capture busy")
 		return
 	}
-	im, err := h.cfg.Backend.Capture(display)
+	im, err := h.nextCapture(display, width)
 	if err != nil {
 		fail(w, 503, err.Error())
 		return
@@ -293,6 +337,19 @@ func resize(src image.Image, width int) image.Image {
 		height = 1
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	// Native/synthetic captures are RGBA. Avoid interface calls and a color
+	// allocation per pixel in the fallback scaler (used by other platforms).
+	if rgba, ok := src.(*image.RGBA); ok {
+		for y := 0; y < height; y++ {
+			sy := b.Min.Y + y*b.Dy()/height
+			for x := 0; x < width; x++ {
+				si := rgba.PixOffset(b.Min.X+x*b.Dx()/width, sy)
+				di := y*dst.Stride + x*4
+				copy(dst.Pix[di:di+4], rgba.Pix[si:si+4])
+			}
+		}
+		return dst
+	}
 	for y := 0; y < height; y++ {
 		sy := b.Min.Y + y*b.Dy()/height
 		for x := 0; x < width; x++ {

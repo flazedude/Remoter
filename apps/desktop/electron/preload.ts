@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('remoter', {
   clipboardSync: (options: unknown) => invoke('clipboardSync', options),
   removeDevice: (id: string) => invoke('removeDevice', id),
   saveNetwork: (settings: unknown) => invoke('saveNetwork', settings),
+  setLaunchOnBoot: (enabled: boolean) => invoke('setLaunchOnBoot', enabled),
   testDevice: (id: string) => invoke('testDevice', id),
   connect: (id: string) => invoke('connect', id),
   frame: (options: unknown) => invoke('frame', options),

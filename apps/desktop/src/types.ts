@@ -50,6 +50,8 @@ export interface AppState {
   network: NetworkSettings;
   activity: ActivityItem[];
   hostRunning: boolean;
+  launchOnBoot?: boolean;
+  startupSupported?: boolean;
   restoredDeviceId?: string;
   updateRestoreError?: string;
   hostInvitation?: string;
@@ -94,6 +96,7 @@ export interface RemoterAPI {
   addLANDevice(id: string): Promise<{ state: AppState; deviceId: string }>;
   removeDevice(id: string): Promise<AppState>;
   saveNetwork(settings: NetworkSettings): Promise<AppState>;
+  setLaunchOnBoot(enabled: boolean): Promise<AppState>;
   testDevice(id: string): Promise<HostInfo>;
   connect(id: string): Promise<HostInfo>;
   frame(options: { deviceId: string; displayId: number; quality: number; width: number }): Promise<string>;

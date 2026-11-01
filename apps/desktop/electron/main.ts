@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, safeStorage } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, safeStorage, Tray } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -11,10 +11,11 @@ import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/type
 import { InputQueue } from './input-queue.js';
 import { UpdateManager } from './update-client.js';
 import { UpdateInstallation, updateResume, windowsUpdateScript, type HostOptions, type UpdateResume } from './update-installation.js';
+import { setStartup, startupSharing, type StartupStore } from './startup.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
-interface Store { version: 1; devices: SavedDevice[]; network: NetworkSettings; activity: AppState['activity']; updateResume?: UpdateResume }
+interface Store extends StartupStore { version: 1; devices: SavedDevice[]; network: NetworkSettings; activity: AppState['activity']; updateResume?: UpdateResume }
 let store: Store = { version: 1, devices: [], network: { ...defaultNetwork }, activity: [] };
 let window: BrowserWindow | null = null;
 let host: ChildProcess | null = null;
@@ -38,6 +39,19 @@ let hostOptions: HostOptions | undefined;
 let hostLANToken: string | undefined;
 let restoredDeviceId: string | undefined;
 let updateRestoreError: string | undefined;
+let tray: Tray | undefined;
+const startupSupported = process.platform === 'win32' && app.isPackaged;
+const startupArgs = ['--remoter-startup'];
+const startupPath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+const ownsInstance = !app.isPackaged || app.requestSingleInstanceLock();
+if (!ownsInstance) app.quit();
+app.on('second-instance', () => { window?.show(); if (window?.isMinimized()) window.restore(); window?.focus(); });
+
+function registerStartup(enabled: boolean) {
+  if (!startupSupported) throw new Error('Launch on boot is available in the Windows release.');
+  app.setLoginItemSettings({ openAtLogin: enabled, path: startupPath, args: startupArgs });
+  if (app.getLoginItemSettings({ path: startupPath, args: startupArgs }).openAtLogin !== enabled) throw new Error('Windows could not update the startup setting.');
+}
 
 function text(value: unknown, name: string, max = 2048): string {
   if (typeof value !== 'string' || value.length > max) throw new Error(`Invalid ${name}.`);
@@ -60,6 +74,7 @@ function publicState(): AppState {
     devices: store.devices.map(({ invitation: _secret, ...device }) => ({ ...device })),
     network: { ...store.network, proxyPassword: '', proxyPasswordSaved: !!store.network.proxyPassword, relayToken: '', relayTokenSaved: !!store.network.relayToken },
     activity: store.activity.slice(), hostRunning: !!host, restoredDeviceId, updateRestoreError,
+    launchOnBoot: store.launchOnBoot === true, startupSupported,
     hostSuggestedListen: suggested, hostSuggestedEndpoint: `https://${suggested}`,
     ...(hostInvitation ? { hostInvitation } : {})
   };
@@ -212,6 +227,7 @@ async function startHost(value: unknown, resumeLANToken?: string): Promise<{ inv
             hostLANToken = typeof message.lanToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(message.lanToken) ? message.lanToken : undefined;
             hostOptions = { listen: typeof message.listen === 'string' ? message.listen : listen, advertise, allowInput: options.allowInput as boolean,
               discover: options.discover === true, easyLAN: options.easyLAN === true, allowClipboard: options.allowClipboard === true, allowAudio: options.allowAudio === true };
+            if (store.launchOnBoot) store.startupSharing = { host: hostOptions, lanToken: hostLANToken };
             audit('This computer', options.allowInput ? 'Sharing started with input enabled' : 'View-only sharing started');
             void persist().catch(() => {});
             resolve({ invitation: message.invitation });
@@ -222,8 +238,9 @@ async function startHost(value: unknown, resumeLANToken?: string): Promise<{ inv
   });
 }
 async function stopHost() {
+  delete store.startupSharing;
   const child = host; host = null; hostInvitation = undefined; hostOptions = undefined; hostLANToken = undefined;
-  if (!child) return;
+  if (!child) { await persist(); return; }
   await endHost(child); audit('This computer', 'Sharing stopped'); await persist();
 }
 function endHost(child: ChildProcess): Promise<void> {
@@ -288,6 +305,14 @@ function registerIPC() {
   });
   handle('removeDevice', async raw => { const device = findDevice(raw); await disconnect(device.id); store.devices = store.devices.filter(d => d.id !== device.id); audit(device.name, 'Device removed from this controller'); await persist(); return publicState(); });
   handle('saveNetwork', async raw => { const settings = validateNetwork(raw); updates.setProxyEnabled(settings.proxyEnabled); await disconnectAll(); store.network = settings; audit('This computer', 'Connection settings updated'); await persist(); return publicState(); });
+  handle('setLaunchOnBoot', async enabled => {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid startup setting.');
+    if (installation.active) throw new Error('Remoter is restarting to install an update.');
+    await setStartup(store, enabled, host && hostOptions ? { host: hostOptions, lanToken: hostLANToken } : undefined, { register: registerStartup, persist });
+    audit('This computer', enabled ? 'Launch on boot and automatic sharing enabled' : 'Launch on boot disabled');
+    await persist();
+    return publicState();
+  });
   handle('testDevice', async raw => { const device = findDevice(raw); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); device.status = 'ready'; return info; } catch (error) { device.status = 'offline'; throw error; } finally { client?.close(); } });
   handle('connect', async raw => { const device = findDevice(raw); await disconnect(device.id); let client: EngineClient | undefined; try { client = await makeClient(device); const info = await client.info(); clients.set(device.id, client); restoredDeviceId = undefined; device.status = 'ready'; device.lastConnectedAt = new Date().toISOString(); audit(device.name, 'Session started'); await persist(); return info; } catch (error) { client?.close(); clients.delete(device.id); device.status = 'offline'; throw error; } });
   handle('audio', async raw => {
@@ -347,6 +372,7 @@ function registerIPC() {
 }
 
 app.whenReady().then(async () => {
+  if (!ownsInstance) return;
   if (process.env.REMOTER_USER_DATA && !app.isPackaged) app.setPath('userData', path.resolve(process.env.REMOTER_USER_DATA));
   statePath = path.join(app.getPath('userData'), 'devices.encrypted');
   updates = new UpdateManager({ currentVersion: app.getVersion(), cacheDirectory: path.join(app.getPath('userData'), 'updates'), enabled: app.isPackaged && process.platform === 'win32' && process.arch === 'x64' });
@@ -378,6 +404,17 @@ app.whenReady().then(async () => {
     restoredDeviceId = store.devices.some(device => device.id === resume.deviceId) ? resume.deviceId : undefined;
     if (process.argv.includes('--remoter-update-failed')) updateRestoreError = 'The update installer failed. Your previous version has reopened; try installing again.';
   }
+  const startup = !resume ? startupSharing(store, process.argv) : undefined;
+  if (startup) {
+    // Windows may invoke startup before the saved network interface is ready.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try { await startHost(startup.host, startup.lanToken); break; }
+      catch {
+        if (attempt === 5) updateRestoreError = 'Startup sharing failed. Open Devices to check this PC’s address and sharing permissions.';
+        else await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  }
   if (store.network.proxyEnabled) updates.setProxyEnabled(true);
   const indexPath = path.join(__dirname, 'renderer', 'index.html');
   rendererURL = !app.isPackaged && process.env.REMOTER_DEV_URL === 'http://127.0.0.1:5173' ? `${process.env.REMOTER_DEV_URL}/` : pathToFileURL(indexPath).href;
@@ -393,7 +430,18 @@ app.whenReady().then(async () => {
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   window.webContents.session.setPermissionCheckHandler(() => false);
   registerIPC();
-  window.once('ready-to-show', () => { if (app.isPackaged || process.env.REMOTER_TEST_HIDE !== '1') window?.show(); });
+  if (startupSupported) {
+    tray = new Tray(await app.getFileIcon(process.execPath, { size: 'small' }));
+    tray.setToolTip('Remoter');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Remoter', click: () => { window?.show(); window?.focus(); } },
+      { label: 'Stop sharing', click: () => { void stopHost().then(() => window?.reload()).catch(() => window?.show()); } },
+      { type: 'separator' }, { label: 'Quit Remoter', click: () => app.quit() }
+    ]));
+    tray.on('double-click', () => { window?.show(); window?.focus(); });
+    window.on('close', event => { if (store.launchOnBoot && !quitting && !installation.active) { event.preventDefault(); window?.hide(); } });
+  }
+  window.once('ready-to-show', () => { if ((app.isPackaged || process.env.REMOTER_TEST_HIDE !== '1') && !(store.launchOnBoot && process.argv.includes('--remoter-startup') && !updateRestoreError)) window?.show(); });
   await window.loadURL(rendererURL);
   if (app.isPackaged && process.platform === 'win32' && process.arch === 'x64') {
     setTimeout(() => { if (!installation.active) void updates.check(); }, 10000).unref();

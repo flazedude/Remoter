@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { ArrowLeft, ChevronDown, Clipboard, Copy, Info, Keyboard, LoaderCircle, Maximize2, Monitor, MousePointer2, Pause, Play, ShieldCheck, Volume2, VolumeX, ClipboardPaste } from 'lucide-react';
 import { api, errorMessage } from './api';
 import { displayPoint } from './geometry';
-import { defaultQuality, frameDelay, qualityProfiles } from './stream-settings';
+import { defaultQuality, frameDelay, qualityProfiles, StreamResolution } from './stream-settings';
 import { useSharing } from './use-sharing';
 import type { Device, HostInfo, NetworkSettings, RemoteInput } from './types';
 
@@ -18,6 +18,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   const [displayId, setDisplayId] = useState(info.displays[0].id);
   const [quality, setQuality] = useState<keyof typeof qualityProfiles>(() => defaultQuality(device.endpoint, network));
   const [fps, setFps] = useState(0);
+  const [streamWidth, setStreamWidth] = useState(0);
   const [frame, setFrame] = useState('');
   const [frameError, setFrameError] = useState('');
   const [inputError, setInputError] = useState('');
@@ -92,6 +93,8 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sampleStart = performance.now();
     let sampleFrames = 0;
+    let resolution = new StreamResolution();
+    let previousQuality = config.current.quality;
     async function poll() {
       if (!active) return;
       if (config.current.paused) { sampleStart = performance.now(); sampleFrames = 0; setFps(0); timer = setTimeout(() => void poll(), 200); return; }
@@ -101,9 +104,13 @@ export default function Session({ device, info, network, disconnecting, onDiscon
       try {
         const selectedDisplay = info.displays.find((item) => item.id === request.displayId)!;
         const profile = qualityProfiles[request.quality];
-        const next = await api.frame({ deviceId: device.id, displayId: request.displayId, quality: profile.quality, width: Math.max(320, Math.min(profile.width, selectedDisplay.width)) });
+        if (request.quality !== previousQuality) { resolution = new StreamResolution(); previousQuality = request.quality; }
+        const width = Math.max(320, Math.min(request.quality === 'lan' ? resolution.width : profile.width, selectedDisplay.width));
+        const next = await api.frame({ deviceId: device.id, displayId: request.displayId, quality: profile.quality, width });
         if (active && request.displayId === config.current.displayId && !config.current.paused) {
           setFrame(next); setFrameError(''); setReceived(true);
+          setStreamWidth(Math.min(width, selectedDisplay.width));
+          if (request.quality === 'lan') resolution.sample(performance.now() - started);
           sampleFrames++;
           const elapsed = performance.now() - sampleStart;
           if (elapsed >= 1000) { setFps(Math.round(sampleFrames * 1000 / elapsed)); sampleStart = performance.now(); sampleFrames = 0; }
@@ -222,7 +229,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   return <div className="session-layout" ref={container}>
     <div className="session-toolbar"><button className="icon-button session-back" onClick={() => void disconnect()} disabled={disconnecting || closing} aria-label="Disconnect and return to devices" title="Disconnect">{disconnecting || closing ? <LoaderCircle className="spin" size={18} /> : <ArrowLeft size={19} />}</button><div className="session-identity"><strong>{device.name}</strong><span>{info.os} · {display.width} × {display.height}</span></div><div className="session-tools">
       <label className="compact-select"><Monitor size={15} /><span className="sr-only">Display</span><select disabled={closing} value={displayId} onChange={(event) => { stopControl(); setFrame(''); setReceived(false); setDisplayId(Number(event.target.value)); }}>{info.displays.map((item, index) => <option key={item.id} value={item.id}>{item.name || `Display ${index + 1}`}</option>)}</select><ChevronDown size={12} /></label>
-      <label className="compact-select quality-select"><span className="sr-only">Picture quality</span><select disabled={closing} value={quality} onChange={(event) => setQuality(event.target.value as keyof typeof qualityProfiles)}><option value="lan">LAN · Max quality</option><option value="balanced">Balanced</option><option value="sharp">Sharper image</option><option value="fast">Less bandwidth</option></select><ChevronDown size={12} /></label>
+      <label className="compact-select quality-select"><span className="sr-only">Picture quality</span><select disabled={closing} value={quality} onChange={(event) => setQuality(event.target.value as keyof typeof qualityProfiles)}><option value="lan">LAN · Smooth</option><option value="original">Original · Max quality</option><option value="balanced">Balanced</option><option value="sharp">Sharper image</option><option value="fast">Less bandwidth</option></select><ChevronDown size={12} /></label>
       <span className="toolbar-divider" />
       <button className={`icon-button${sharing.sound ? ' sharing-active' : ''}`} disabled={closing || !info.capabilities.audio} aria-label={sharing.sound ? 'Mute host sound' : 'Hear host sound'} aria-pressed={sharing.sound} title={info.capabilities.audio ? 'Hear system audio from this host' : 'Enable system audio on the host before sharing'} onClick={() => void sharing.toggleSound()}>{sharing.sound ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
       <button className={`icon-button${sharing.clipboard ? ' sharing-active' : ''}`} disabled={closing || !info.capabilities.clipboard} aria-label="Sync text clipboard" aria-pressed={sharing.clipboard} title={info.capabilities.clipboard ? 'Automatically sync copied text in both directions' : 'Enable two-way text clipboard on the host before sharing'} onClick={sharing.toggleClipboard}><Clipboard size={17} /></button>
@@ -263,6 +270,6 @@ export default function Session({ device, info, network, disconnecting, onDiscon
       {frameError && <div className="capture-error"><Info size={24} /><strong>Waiting for the host</strong><p>{frameError}</p><span>Reconnecting automatically…</span></div>}
       {paused && <div className="paused-indicator"><Pause size={14} />Screen updates paused</div>}
     </div>
-    <div className="session-footer"><span><span className={`session-status-dot${frameError ? ' interrupted' : received ? ' live' : ''}`} />{closing ? 'Disconnecting' : paused ? 'Paused' : frameError ? 'Connection interrupted' : received ? 'Screen sharing' : 'Connecting'}</span><span>{control ? <><Keyboard size={13} />Press Esc to release control</> : info.capabilities.input ? 'Select “View only” to enable control' : 'The host allows viewing only'}</span><span className="capture-cadence" title="Received frame rate; capture speed and connection determine actual FPS">{fps} FPS · Target {qualityProfiles[quality].fps}{quality === 'lan' ? ' · LAN' : ''}</span></div>
+    <div className="session-footer"><span><span className={`session-status-dot${frameError ? ' interrupted' : received ? ' live' : ''}`} />{closing ? 'Disconnecting' : paused ? 'Paused' : frameError ? 'Connection interrupted' : received ? 'Screen sharing' : 'Connecting'}</span><span>{control ? <><Keyboard size={13} />Press Esc to release control</> : info.capabilities.input ? 'Select “View only” to enable control' : 'The host allows viewing only'}</span><span className="capture-cadence" title="Received frame rate; capture speed and connection determine actual FPS">{fps} FPS · Target {qualityProfiles[quality].fps}{streamWidth ? ` · ${streamWidth}px` : ''}{quality === 'lan' ? ' · LAN' : ''}</span></div>
   </div>;
 }

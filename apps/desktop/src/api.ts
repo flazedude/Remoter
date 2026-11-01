@@ -29,6 +29,7 @@ const previewAPI: RemoterAPI = {
   discoverLAN: unavailable, addLANDevice: unavailable, audio: unavailable, clipboardSync: unavailable,
   connect: unavailable, frame: unavailable, input: unavailable, disconnect: unavailable,
   startHost: unavailable, stopHost: unavailable, copy: unavailable,
+  setLaunchOnBoot: unavailable,
 };
 
 export const api: RemoterAPI = window.remoter ?? previewAPI;

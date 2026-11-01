@@ -1,6 +1,6 @@
 {
   "name": "remoter",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "private": true,
   "description": "An open-source remote desktop application powered by Remoter Engine.",
   "license": "Apache-2.0",

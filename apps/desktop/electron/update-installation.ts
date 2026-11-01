@@ -9,7 +9,7 @@ export interface UpdateResume {
   deviceId?: string;
 }
 
-// An update handoff is one-use and expires. Ordinary launches never resume sharing.
+// An update handoff is one-use and expires. Boot sharing is a separate opt-in.
 export function updateResume(value: UpdateResume | undefined, version: string, args: string[], now = Date.now()): UpdateResume | undefined {
   if (!value || now < value.createdAt || now - value.createdAt > 60 * 60 * 1000) return;
   if (args.includes('--remoter-update-failed') || (args.includes('--updated') && value.version === version)) return value;

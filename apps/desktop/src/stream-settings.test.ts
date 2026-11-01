@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultQuality, frameDelay, qualityProfiles } from './stream-settings';
+import { defaultQuality, frameDelay, qualityProfiles, StreamResolution } from './stream-settings';
 
 test('LAN headroom defaults only to direct local endpoints without a proxy', () => {
   const direct = { mode: 'direct' as const, proxyEnabled: false };
@@ -20,4 +20,24 @@ test('frame pacing includes request time and never queues frames to catch up', (
   assert.equal(frameDelay(30, 40), 1);
   assert.equal(frameDelay(15, 20), 47);
   assert.equal(qualityProfiles.lan.fps, 30);
+});
+
+test('smooth LAN backs off sustained slow capture and recovers conservatively', () => {
+  const resolution = new StreamResolution();
+  assert.equal(resolution.width, 1920);
+  resolution.sample(100);
+  assert.equal(resolution.width, 1920, 'one slow frame must not lower resolution');
+  for (let i = 0; i < 29; i++) resolution.sample(70);
+  assert.equal(resolution.width, 1600);
+  for (let i = 0; i < 60; i++) resolution.sample(70);
+  assert.equal(resolution.width, 960);
+  for (let i = 0; i < 300; i++) resolution.sample(70);
+  assert.equal(resolution.width, 960, 'bounded minimum');
+  for (let i = 0; i < 149; i++) resolution.sample(10);
+  assert.equal(resolution.width, 960);
+  resolution.sample(10);
+  assert.equal(resolution.width, 1280);
+  for (let i = 0; i < 600; i++) resolution.sample(10);
+  assert.equal(resolution.width, 1920, 'bounded maximum');
+  assert.equal(qualityProfiles.original.width, 3840, 'full-resolution quality stays selectable');
 });

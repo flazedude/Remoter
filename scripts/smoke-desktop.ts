@@ -212,8 +212,39 @@ try {
   page = await application.firstWindow();
   await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
   assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, false, 'Consumed handoff must not replay');
+  // Seed only the isolated encrypted test profile. No Windows startup entry is
+  // created; registration/rollback is tested independently with injected steps.
+  const startupDisk = (await readFile(stateFile)).toString('base64');
+  const startupProfile = await application.evaluate(async ({ safeStorage }, data) => {
+    const stored = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(data.disk, 'base64'))).result);
+    stored.launchOnBoot = true;
+    stored.startupSharing = data.sharing;
+    return (await safeStorage.encryptStringAsync(JSON.stringify(stored))).toString('base64');
+  }, { disk: startupDisk, sharing: { host: { ...hostOptions, listen: new URL(updateHost.endpoint).host }, lanToken: lanInvitation.token } });
+  await application.close(); application = undefined;
+  await writeFile(stateFile, Buffer.from(startupProfile, 'base64'));
+  application = await electron.launch({ executablePath, args: ['.', '--remoter-startup'], cwd: process.cwd(), env: env as Record<string, string> });
+  page = await application.firstWindow();
+  await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
+  const booted = await page.evaluate(() => window.remoter!.getState());
+  assert.equal(booted.hostRunning, true, 'Startup must restore explicitly enabled sharing');
+  assert.equal(booted.hostInvitation, updateInvitation);
+  const bootClient = new EngineClient(lanInvitation);
+  try { assert.equal((await bootClient.info()).capabilities.input, false, 'Startup must retain view-only permission'); }
+  finally { bootClient.close(); }
+  await page.getByRole('button', { name: 'Set up sharing', exact: true }).click();
+  await page.getByLabel('Launch on boot', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Launch on boot', { exact: true }).isChecked(), true);
+  await page.screenshot({ path: path.join(resultDir, 'desktop-startup.png') });
+  await page.getByRole('button', { name: 'Stop sharing', exact: true }).click();
+  await page.getByText('Not sharing', { exact: true }).waitFor();
+  await application.close(); application = undefined;
+  application = await electron.launch({ executablePath, args: ['.', '--remoter-startup'], cwd: process.cwd(), env: env as Record<string, string> });
+  page = await application.firstWindow();
+  await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, false, 'Stop sharing must suppress boot sharing');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, pairingRestored: true, encryptedStorage: true, credentialScope: true, updateSessionRestored: true, updateLANAccessRetained: true, updateHandoffConsumed: true, errors }));
+  console.log(JSON.stringify({ result: 'PASS', capture: 'synthetic only', dimensions, cadence, pairingRestored: true, encryptedStorage: true, credentialScope: true, updateSessionRestored: true, updateLANAccessRetained: true, updateHandoffConsumed: true, startupSharingRestored: true, startupStopRetained: true, errors }));
 } finally {
   if (application) await application.close();
 }
