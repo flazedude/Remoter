@@ -92,6 +92,7 @@ func (n *Native) CaptureSized(id, maxWidth int) (im image.Image, err error) {
 	if !win.StretchBlt(memory, 0, 0, int32(width), int32(height), dc, int32(d.X), int32(d.Y), int32(d.Width), int32(d.Height), win.SRCCOPY) {
 		return nil, fmt.Errorf("screen copy failed")
 	}
+	drawCapturedCursor(memory, d, width, height)
 	if !win.GdiFlush() {
 		return nil, fmt.Errorf("screen copy flush failed")
 	}
