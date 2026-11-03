@@ -48,6 +48,7 @@ export interface UpdateState {
 }
 
 export interface AppState {
+  platform?: string;
   devices: Device[];
   network: NetworkSettings;
   activity: ActivityItem[];
@@ -88,6 +89,9 @@ export type RemoteInput =
   | { type: 'releaseAll' };
 
 export interface RemoterAPI {
+  openLocalNetworkSettings(): Promise<void>;
+  getHostPermissions(): Promise<HostPermissions>;
+  requestHostPermission(permission: 'screen' | 'input'): Promise<HostPermissions>;
   setTheme(theme: 'light' | 'dark'): Promise<void>;
   getUpdates(): Promise<UpdateState>;
   checkUpdates(): Promise<UpdateState>;
@@ -101,7 +105,7 @@ export interface RemoterAPI {
   setLaunchOnBoot(enabled: boolean): Promise<AppState>;
   testDevice(id: string): Promise<HostInfo>;
   connect(id: string): Promise<HostInfo>;
-  frame(options: { deviceId: string; displayId: number; quality: number; width: number }): Promise<string>;
+  frame(options: { deviceId: string; displayId: number; quality: number; width: number; fps?: number }): Promise<{ bytes: Uint8Array; width: number; height: number; captureMs: number; encodeMs: number; streaming: boolean }>;
   input(options: { deviceId: string; event: RemoteInput }): Promise<void>;
   audio(options: { deviceId: string; after: number }): Promise<AudioPacket>;
   clipboardSync(options: { deviceId: string; direction: 'send' | 'receive' | 'both' | 'paste' | 'copy' | 'reset' }): Promise<void>;
@@ -110,6 +114,8 @@ export interface RemoterAPI {
   stopHost(): Promise<void>;
   copy(text: string): Promise<void>;
 }
+
+export interface HostPermissions { screen: boolean; input: boolean }
 
 declare global {
   interface Window {

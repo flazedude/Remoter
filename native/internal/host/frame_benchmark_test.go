@@ -3,7 +3,6 @@ package host
 import (
 	"bytes"
 	"image"
-	"image/jpeg"
 	"testing"
 )
 
@@ -21,7 +20,7 @@ func BenchmarkFrameProcessing(b *testing.B) {
 				if width < src.Bounds().Dx() {
 					im = resize(src, width)
 				}
-				if err := jpeg.Encode(&out, im, &jpeg.Options{Quality: 85}); err != nil {
+				if err := encodeJPEG(&out, im, 85); err != nil {
 					b.Fatal(err)
 				}
 			}

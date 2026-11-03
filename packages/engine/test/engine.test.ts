@@ -72,6 +72,20 @@ test('direct pinned TLS supports info, frames, input and closes cleanly', async 
   } finally { client.close(); target.close(); }
 });
 
+test('old hosts fall back to paced snapshots and preserve TLS authentication', async () => {
+  const target = await host();
+  const client = new EngineClient(target.invitation);
+  const abort = new AbortController();
+  const frames = client.frames({ fps: 30 }, abort.signal);
+  try {
+    assert.equal((await frames.next()).value!.streaming, false);
+    assert.equal((await frames.next()).value!.streaming, false);
+    assert.equal(target.requests, 3, 'one unsupported stream request plus two snapshots');
+    abort.abort();
+    assert.equal((await frames.next()).done, true);
+  } finally { client.close(); target.close(); }
+});
+
 test('incorrect host certificate and bearer token are rejected', async () => {
   const wrongHost = await host(true);
   const wrongIdentity = new EngineClient(wrongHost.invitation);

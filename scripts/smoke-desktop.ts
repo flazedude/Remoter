@@ -131,7 +131,7 @@ try {
   await page.getByRole('button', { name: 'Controlling', exact: true }).waitFor();
   assert.equal(await page.getByRole('combobox', { name: /Picture quality/ }).inputValue(), 'lan');
   assert.equal(await remoteScreen.evaluate(element => getComputedStyle(element).cursor), 'default');
-  await page.waitForFunction(() => Number(document.querySelector('.capture-cadence')?.textContent?.match(/^(\d+) FPS/)?.[1]) >= 15, undefined, { timeout: 20000 });
+  await page.waitForFunction(() => Number(document.querySelector('.capture-cadence')?.textContent?.match(/^(\d+) FPS/)?.[1]) >= 27, undefined, { timeout: 20000 });
   const cadence = await page.locator('.capture-cadence').innerText();
   // The host clipboard is synthetic. Stub Electron's local clipboard too, so
   // these copy/paste checks never read or modify the user's real clipboard.
@@ -312,8 +312,12 @@ try {
   try { assert.equal((await bootClient.info()).capabilities.input, false, 'Startup must retain view-only permission'); }
   finally { bootClient.close(); }
   await page.getByRole('button', { name: 'Set up sharing', exact: true }).click();
-  await page.getByLabel('Launch on boot', { exact: true }).waitFor();
-  assert.equal(await page.getByLabel('Launch on boot', { exact: true }).isChecked(), true);
+  if (process.platform === 'darwin') {
+    assert.equal(await page.getByLabel('Launch on boot', { exact: true }).count(), 0);
+  } else {
+    await page.getByLabel('Launch on boot', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('Launch on boot', { exact: true }).isChecked(), true);
+  }
   await page.screenshot({ path: path.join(resultDir, 'desktop-startup.png') });
   await page.getByRole('button', { name: 'Stop sharing', exact: true }).click();
   await page.getByText('Not sharing', { exact: true }).waitFor();

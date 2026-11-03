@@ -8,6 +8,7 @@ import { api, emptyState, errorMessage, isBrowserPreview } from './api';
 import { updateNetworkField } from './network-settings';
 import type { AppState, Device, DiscoveredHost, HostInfo, NetworkSettings, UpdateState } from './types';
 import Session from './Session';
+import MacPermissions from './MacPermissions';
 
 type Page = 'devices' | 'network' | 'activity' | 'updates';
 type Notice = { text: string; kind: 'success' | 'error' };
@@ -204,7 +205,7 @@ export default function App() {
 
     {notice && <div className={`toast ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={17} /> : <Info size={17} />}<span>{notice.text}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice(null)}><X size={15} /></button></div>}
 
-    {showAdd && <AddDeviceModal onClose={() => setShowAdd(false)} onLAN={async (id) => { const result = await api.addLANDevice(id); setState(result.state); setShowAdd(false); await connect(result.state.devices.find(device => device.id === result.deviceId)!); }} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added.'); }} />}
+    {showAdd && <AddDeviceModal platform={state.platform} onClose={() => setShowAdd(false)} onLAN={async (id) => { const result = await api.addLANDevice(id); setState(result.state); setShowAdd(false); await connect(result.state.devices.find(device => device.id === result.deviceId)!); }} onAdd={async (invitation) => { setState(await api.addDevice(invitation)); setShowAdd(false); notify('Device added.'); }} />}
     {removeDevice && <Modal title="Remove device?" onClose={() => !busy && setRemoveDevice(null)} busy={!!busy}>
       <p className="modal-description"><strong>{removeDevice.name}</strong> will be removed. Its host will keep running.</p>
       <div className="modal-actions"><button className="button" disabled={!!busy} onClick={() => setRemoveDevice(null)}>Cancel</button><button className="button danger" disabled={!!busy} onClick={async () => { setBusy('remove'); try { setState(await api.removeDevice(removeDevice.id)); setRemoveDevice(null); notify('Device removed.'); } catch (error) { notify(errorMessage(error), 'error'); } finally { setBusy(''); } }}>{busy === 'remove' ? <Spinner /> : <Trash2 size={15} />}Remove device</button></div>
@@ -255,7 +256,7 @@ function Modal({ title, children, onClose, busy = false }: { title: string; chil
   return <dialog className="modal" ref={ref} aria-labelledby="modal-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (!busy && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) onClose(); } }}><div className="modal-heading"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="Close dialog" disabled={busy} onClick={onClose}><X size={19} /></button></div>{children}</dialog>;
 }
 
-function AddDeviceModal({ onClose, onAdd, onLAN }: { onClose: () => void; onAdd: (invitation: string) => Promise<void>; onLAN: (id: string) => Promise<void> }) {
+function AddDeviceModal({ platform, onClose, onAdd, onLAN }: { platform?: string; onClose: () => void; onAdd: (invitation: string) => Promise<void>; onLAN: (id: string) => Promise<void> }) {
   const [invitation, setInvitation] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -270,6 +271,10 @@ function AddDeviceModal({ onClose, onAdd, onLAN }: { onClose: () => void; onAdd:
   useEffect(() => { void scan(); }, []);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setError(''); try { await onAdd(invitation.trim()); } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); } }
   return <Modal title="Add a device" onClose={onClose} busy={busy}>
+    {platform === 'darwin' && <div className="local-network-help">
+      <p className="field-help">Allow Remoter in System Settings → Privacy &amp; Security → Local Network to connect to nearby computers. If you change access, quit and reopen Remoter.</p>
+      <button className="button small" disabled={busy} onClick={async () => { try { await api.openLocalNetworkSettings(); } catch (error) { setError(errorMessage(error)); } }}>Open Local Network settings</button>
+    </div>}
     <section className="lan-discovery" aria-label="Nearby computers">
       <div className="lan-discovery-heading"><strong><Wifi size={16} />Nearby computers</strong><button className="button small" disabled={busy || scanning} onClick={() => void scan()}>{scanning ? <Spinner /> : <Search size={14} />}{scanning ? 'Searching…' : 'Scan again'}</button></div>
       <p className="field-help">Start sharing on the other PC. Enable “Easy LAN connections” there for one-click access.</p>
@@ -305,21 +310,22 @@ function HostPanel({ state, updateState, notify }: { state: AppState; updateStat
   return <section className={`host-panel${expanded ? ' expanded' : ''}`} aria-label="Share this computer">
     <div className="host-summary"><div className="host-icon"><Monitor size={20} strokeWidth={1.6} /></div><div className="host-title"><h2>This computer <span className={`host-badge${state.hostRunning ? ' sharing' : ''}`}>{state.hostRunning ? 'Sharing' : 'Not sharing'}</span></h2></div><button className="button small" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? 'Hide details' : 'Set up sharing'}<ChevronDown size={15} className={expanded ? 'rotate' : ''} /></button></div>
     {expanded && <div className="host-details">
+      {state.platform === 'darwin' && <MacPermissions sharing={state.hostRunning} />}
       {!state.hostRunning && <fieldset className="sharing-options" disabled={busy}><legend>Sharing permissions</legend>
         <label className="check-label"><input type="checkbox" checked={discover} onChange={event => { setDiscover(event.target.checked); if (!event.target.checked) setEasyLAN(false); }} />Show this PC in LAN discovery</label>
         <label className="check-label"><input type="checkbox" checked={easyLAN} onChange={event => { setEasyLAN(event.target.checked); if (event.target.checked) setDiscover(true); }} />Easy LAN connections</label>
         <p className="field-help">Anyone on this PC’s private LAN can connect without an invitation while this is enabled. Stop sharing to revoke LAN access.</p>
-        <label className="check-label"><input type="checkbox" checked={allowClipboard} onChange={event => setAllowClipboard(event.target.checked)} />Allow two-way text clipboard</label>
-        <label className="check-label"><input type="checkbox" checked={allowAudio} onChange={event => setAllowAudio(event.target.checked)} />Allow system audio (Windows host)</label>
+        <label className="check-label"><input type="checkbox" disabled={state.platform === 'darwin'} checked={allowClipboard} onChange={event => setAllowClipboard(event.target.checked)} />Allow two-way text clipboard{state.platform === 'darwin' ? ' (Windows host)' : ''}</label>
+        <label className="check-label"><input type="checkbox" disabled={state.platform === 'darwin'} checked={allowAudio} onChange={event => setAllowAudio(event.target.checked)} />Allow system audio (Windows host)</label>
       </fieldset>}
       <div className="host-controls"><div>{state.hostRunning ? <span className="check-label"><ShieldCheck size={14} />Sharing is enabled</span> : <label className="check-label"><input type="checkbox" checked={allowInput} disabled={busy} onChange={(event) => setAllowInput(event.target.checked)} /><span>Allow keyboard and mouse control</span></label>}<p className="field-help">{state.hostRunning ? 'Stop sharing to change access permissions.' : 'Keep this off to share your screen in view-only mode.'}</p></div><button className={`button ${state.hostRunning ? '' : 'primary'}`} disabled={busy} onClick={() => void toggleHost()}>{busy ? <Spinner /> : state.hostRunning ? <Square size={14} /> : <ArrowUpRightIcon />}{state.hostRunning ? 'Stop sharing' : 'Start sharing'}</button></div>
-      <label className="check-label"><input type="checkbox" checked={state.launchOnBoot === true} disabled={busy || !state.startupSupported || (!state.hostRunning && !state.launchOnBoot)} onChange={async event => {
+      {state.platform !== 'darwin' && <><label className="check-label"><input type="checkbox" checked={state.launchOnBoot === true} disabled={busy || !state.startupSupported || (!state.hostRunning && !state.launchOnBoot)} onChange={async event => {
         const enabled = event.target.checked; setBusy(true);
         try { updateState(await api.setLaunchOnBoot(enabled)); notify(enabled ? 'Launch on boot enabled. Sharing will resume after Windows sign-in.' : 'Launch on boot disabled.'); }
         catch (error) { notify(errorMessage(error), 'error'); }
         finally { setBusy(false); }
       }} />Launch on boot</label>
-      <p className="field-help">{!state.startupSupported ? 'Available in the Windows release.' : !state.hostRunning && !state.launchOnBoot ? 'Start sharing first to save your startup permissions.' : 'Starts in the tray after Windows sign-in with saved sharing permissions. Closing the window keeps it running; quit from the tray. Stop sharing clears automatic sharing.'}</p>
+      <p className="field-help">{!state.startupSupported ? 'Available in the Windows release.' : !state.hostRunning && !state.launchOnBoot ? 'Start sharing first to save your startup permissions.' : 'Starts in the tray after Windows sign-in with saved sharing permissions. Closing the window keeps it running; quit from the tray. Stop sharing clears automatic sharing.'}</p></>}
       {!state.hostRunning && <><p className="field-help">{advertise.includes('://127.') || advertise.includes('://localhost') || advertise.includes('://[::1]') ? 'Local testing only. Set a LAN or Tailscale address in connection details to reach this computer remotely.' : `Host address: ${advertise}`}</p><button className="text-button advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}><Settings2 size={13} />Connection details<ChevronDown size={13} className={advanced ? 'rotate' : ''} /></button>{advanced && <div className="host-advanced"><label className="field-label">Listen address<input className="text-input" value={listen} onChange={(event) => setListen(event.target.value)} placeholder="192.168.1.20:45780" spellCheck={false} disabled={busy} /></label><label className="field-label">Address in invitation<input className="text-input" value={advertise} onChange={(event) => setAdvertise(event.target.value)} placeholder="https://192.168.1.20:45780" spellCheck={false} disabled={busy} /><span className="field-help">Use a LAN or Tailscale HTTPS address your other computer can reach.</span></label></div>}</>}
       {state.hostRunning && <div className="host-invitation"><div><span className="field-label">Your invitation</span><p className="field-help">{invitation ? 'Copy this to Remoter on your other computer. Anyone with it can connect.' : 'Restart sharing to retrieve its invitation.'}</p></div><button className="button small" disabled={!invitation} onClick={async () => { try { await api.copy(invitation); setCopied(true); setTimeout(() => setCopied(false), 2200); } catch (error) { notify(errorMessage(error), 'error'); } }}>{copied ? <Check size={15} /> : <Clipboard size={15} />}{copied ? 'Copied' : 'Copy invitation'}</button></div>}
     </div>}

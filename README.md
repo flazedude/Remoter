@@ -29,6 +29,8 @@ npm run dev
 
 The Electron window is the functioning application. `npm run preview` opens only the UI development server at `http://127.0.0.1:5173`; native operations are explicitly unavailable there.
 
+For Mac packaging, permission setup, and verification, see [macOS setup](docs/macos.md).
+
 ### Connect two computers
 
 1. Build or install Remoter on both machines.
@@ -43,7 +45,7 @@ LAN discovery uses UDP port **45781** on the same network; desktop connections s
 
 On a Windows host, enable **Allow two-way text clipboard** and/or **Allow system audio** before starting sharing. During a session, use the clipboard icon to sync newly copied text in both directions, or its **Send clipboard to host** / **Get host clipboard** buttons for an immediate transfer. Ctrl/Cmd+V sends the local text before the remote paste when sync is on. Text is limited to 1 MiB; files, images, and clipboard history are not transferred. The speaker icon plays the host's default system output on the controller; it does not forward a microphone. Both session options start off and remain unavailable when the host denies them. System audio and clipboard hosting currently require Windows; the desktop controller can receive them on other platforms.
 
-Direct connections to private LAN addresses default to **LAN · Smooth**, targeting 30 FPS at up to 1920 pixels wide and JPEG quality 80. Sustained slow frames reduce width to 1600, 1280, then 960; sustained headroom restores it gradually. **Original · Max quality** keeps the previous 4K/quality-90 option. Balanced and Sharper image also target 30 FPS; Less bandwidth targets 15 FPS. The host overlaps one capture with encoding/transfer and never builds an unbounded frame queue. Windows scales during capture, and other platforms use an optimized RGBA scaler. The footer shows received FPS and requested stream width. Actual FPS depends on capture, encoding, display, and network throughput; transport still uses JPEG rather than hardware video encoding.
+Direct connections to private LAN addresses default to **LAN · Smooth**, targeting 30 FPS at up to 1920 pixels wide and JPEG quality 85. The host sends a paced stream over a single authenticated, pinned-TLS connection; capture overlaps native JPEG encoding and transfer. The viewer keeps one latest frame, transfers binary bytes to the renderer, and decodes before presenting. Sustained slow processing or delivery reduces width to 1600, 1280, then 960; sustained processing headroom with stable delivery restores it gradually. **Original · Max quality** keeps the 4K/quality-90 option. Balanced and Sharper image also target 30 FPS; Less bandwidth targets 15 FPS. Windows and Mac scale during capture, and Mac keeps ScreenCaptureKit running across frames. Capture stops when idle. The footer shows decoded FPS and actual image width; hover for capture, encoding, and decode timings. A brief missed request does not disable control; a screen stale for a second releases input. Both ends need alpha.8 for streaming and faster encoding; older hosts use paced snapshot requests. Actual FPS still depends on capture, encoding, display, and network throughput; transport uses JPEG rather than hardware video encoding.
 
 The desktop suggests a local private interface for sharing, falling back to loopback if none is available. Review Connection details before starting. The standalone CLI defaults to loopback. For a LAN, an example is listen `192.168.1.50:45780` and advertised address `https://192.168.1.50:45780`. Restrict the host firewall to the networks you intend to allow. For Tailscale, advertise the host's Tailscale IP or fully qualified MagicDNS name, and allow the port in your tailnet policy. The application does not install or administer Tailscale.
 
@@ -93,7 +95,7 @@ npm run package
 ## Current boundaries
 
 - The host operates in the current logged-in user session. It does not install a boot service, bypass Windows UAC, or unlock FileVault preboot.
-- macOS needs Screen Recording and Accessibility approval. Native macOS behavior must be verified on Mac hardware.
+- macOS sharing includes Screen Recording and Accessibility setup with native permission checks. Screen access is required for sharing; Accessibility is required for remote input. Interactive capture/input behavior still needs real-device validation.
 - JPEG polling is the first transport baseline, not a high-frame-rate video codec.
 - Pairing is per device, with a revocable device token. Central accounts, MFA, per-operator capabilities, short-lived grants, and fleet policies are planned.
 - Concurrent controllers of one host share input state; use one controlling session per host during the alpha.

@@ -70,6 +70,12 @@ func TestSignedFeedAndInstaller(t *testing.T) {
 func TestServerBoundariesAndRanges(t *testing.T) {
 	cfg, m, data, installer := fixture(t)
 	root := t.TempDir()
+	// macOS places temporary files below /var, a system symlink to /private/var.
+	// Use its canonical path: the server deliberately rejects symlink ancestors.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(filepath.Join(root, "latest.json"), data, 0600)
 	os.WriteFile(filepath.Join(root, m.Installer.Name), installer, 0600)
 	os.WriteFile(filepath.Join(root, "private.key"), []byte("secret"), 0600)

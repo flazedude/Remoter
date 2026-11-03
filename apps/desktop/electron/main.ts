@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, safeStorage, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, safeStorage, shell, Tray } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -8,11 +8,15 @@ import { networkInterfaces } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { EngineClient, parseInvitation, discoverLAN, pairLANHost, type LANHost, type Invitation, type RouteSettings } from '@remoter/engine';
 import type { AppState, Device, NetworkSettings, RemoteInput } from '../src/types.js';
+import { FrameReceiver } from './frame-receiver.js';
+import type { StreamFrame } from '../../../packages/engine/src/frame-stream.js';
 import { InputQueue } from './input-queue.js';
 import { clipboardTransfer, type ClipboardDirection } from './clipboard-sync.js';
 import { UpdateManager } from './update-client.js';
 import { UpdateInstallation, updateResume, launchWindowsUpdate, type HostOptions, type UpdateResume } from './update-installation.js';
 import { setStartup, startupSharing, type StartupStore } from './startup.js';
+import { assertHostPermissions, hostPermissions, permissionSettingsURL } from './host-permissions.js';
+import { connectionError } from './connection-errors.js';
 
 const defaultNetwork: NetworkSettings = { mode: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: 1080, proxyUsername: '', proxyPassword: '', relayUrl: '', relayDeviceId: '', relayToken: '' };
 interface SavedDevice extends Device { invitation: Invitation }
@@ -30,6 +34,11 @@ const discoveredHosts = new Map<string, LANHost>();
 let discoveryPending: Promise<LANHost[]> | undefined;
 const clipboardStates = new Map<string, { local: string; remote: string }>();
 const clipboardQueues = new Map<string, Promise<void>>();
+const frameStreams = new Map<string, { key: string; receiver: FrameReceiver<StreamFrame>; abort: AbortController; idle?: ReturnType<typeof setTimeout> }>();
+function stopFrames(id: string) {
+  const stream = frameStreams.get(id);
+  if (stream) { clearTimeout(stream.idle); stream.abort.abort(); stream.receiver.close(); frameStreams.delete(id); }
+}
 const inputQueues = new Map<string, InputQueue>();
 let rendererURL = '';
 let updates: UpdateManager;
@@ -72,6 +81,7 @@ function publicState(): AppState {
   const tailnet = addresses.find(ip => { const parts = ip.split('.').map(Number); return parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127; });
   const suggested = `${lan || tailnet || '127.0.0.1'}:45780`;
   return {
+    platform: process.platform,
     devices: store.devices.map(({ invitation: _secret, ...device }) => ({ ...device })),
     network: { ...store.network, proxyPassword: '', proxyPasswordSaved: !!store.network.proxyPassword, relayToken: '', relayTokenSaved: !!store.network.relayToken },
     activity: store.activity.slice(), hostRunning: !!host, restoredDeviceId, updateRestoreError,
@@ -144,6 +154,7 @@ async function disconnect(id: string) {
   const queue = inputQueues.get(id);
   await (queue ? queue.send({ type: 'releaseAll' }) : client.input({ type: 'releaseAll' })).catch(() => {});
   queue?.close();
+  stopFrames(id);
   client.close(); clients.delete(id); inputQueues.delete(id);
   clipboardStates.delete(id); clipboardQueues.delete(id);
   const device = findDevice(id);
@@ -195,6 +206,11 @@ async function startHost(value: unknown, resumeLANToken?: string): Promise<{ inv
   if (advertise && new URL(advertise).protocol !== 'https:') throw new Error('The advertised address must use https://.');
   const binary = hostBinary();
   if (!existsSync(binary)) throw new Error('Build the native host first: npm run build:native');
+  if (process.platform === 'darwin' && (app.isPackaged || process.env.REMOTER_TEST_SYNTHETIC !== '1')) {
+    if (options.allowAudio || options.allowClipboard) throw new Error('Clipboard and system audio hosting currently require Windows.');
+    assertHostPermissions(await hostPermissions(binary), options.allowInput);
+    if (host) throw new Error('Sharing is already running.');
+  }
   const args = ['--listen', listen, '--state-dir', path.join(app.getPath('userData'), 'host'), '--exit-on-stdin-close'];
   if (advertise) args.push('--advertise', advertise);
   if (options.allowInput) args.push('--allow-input');
@@ -256,13 +272,20 @@ function registerIPC() {
   function handle(name: string, handler: (...args: unknown[]) => unknown) {
     ipcMain.handle(`remoter:${name}`, (event, ...args: unknown[]) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererURL) throw new Error('Untrusted application frame.');
+      const invoke = async () => {
+        try { return await handler(...args); }
+        catch (error) {
+          if (['connect', 'testDevice', 'addLANDevice', 'discoverLAN', 'frame', 'input', 'audio', 'clipboardSync'].includes(name)) throw connectionError(error, process.platform);
+          throw error;
+        }
+      };
       if (name === 'connect' || name === 'startHost') {
         if (installation.active) throw new Error('Remoter is restarting to install an update.');
-        const pending = Promise.resolve().then(() => handler(...args)).finally(() => { pendingSessionStarts.delete(pending); });
+        const pending = Promise.resolve().then(invoke).finally(() => { pendingSessionStarts.delete(pending); });
         pendingSessionStarts.add(pending);
         return pending;
       }
-      return handler(...args);
+      return invoke();
     });
   }
   handle('setTheme', theme => {
@@ -270,6 +293,21 @@ function registerIPC() {
     nativeTheme.themeSource = theme;
   });
   handle('getState', publicState);
+  handle('openLocalNetworkSettings', async () => {
+    if (process.platform !== 'darwin') throw new Error('Local Network settings are available on macOS.');
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork');
+  });
+  handle('getHostPermissions', () => {
+    if (process.platform !== 'darwin') throw new Error('Mac permissions are available on macOS.');
+    return hostPermissions(hostBinary());
+  });
+  handle('requestHostPermission', async permission => {
+    if (process.platform !== 'darwin') throw new Error('Mac permissions are available on macOS.');
+    const url = permissionSettingsURL(permission);
+    const permissions = await hostPermissions(hostBinary(), permission as 'screen' | 'input');
+    await shell.openExternal(url);
+    return permissions;
+  });
   handle('getUpdates', () => updates.snapshot());
   handle('checkUpdates', () => installation.active ? updates.snapshot() : updates.check());
   handle('installUpdate', () => installation.install());
@@ -355,7 +393,21 @@ function registerIPC() {
     if (!client) throw new Error('Start a session first.');
     if (inflightFrames.has(id)) throw new Error('A frame is already in flight.');
     inflightFrames.add(id);
-    try { const bytes = await client.frame({ display: integer(options.displayId, 0, 64), quality: integer(options.quality, 20, 90), width: integer(options.width, 320, 3840) }); return `data:image/jpeg;base64,${bytes.toString('base64')}`; }
+    try {
+      const frameOptions = { display: integer(options.displayId, 0, 31), quality: integer(options.quality, 20, 90), width: integer(options.width, 320, 3840), fps: integer(options.fps ?? 30, 1, 30) };
+      const key = JSON.stringify(frameOptions);
+      let stream = frameStreams.get(id);
+      if (!stream || stream.key !== key) {
+        stopFrames(id);
+        const abort = new AbortController();
+        stream = { key, abort, receiver: new FrameReceiver(client.frames(frameOptions, abort.signal)) };
+        frameStreams.set(id, stream);
+      }
+      clearTimeout(stream.idle);
+      const next = await stream.receiver.read();
+      stream.idle = setTimeout(() => stopFrames(id), 500);
+      return next;
+    } catch (error) { stopFrames(id); throw error; }
     finally { inflightFrames.delete(id); }
   });
   handle('input', async raw => {

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"image"
-	"image/jpeg"
 	"io"
 	"net/http"
 	"runtime"
@@ -54,8 +53,9 @@ type Handler struct {
 }
 
 type captureResult struct {
-	image image.Image
-	err   error
+	image    image.Image
+	err      error
+	duration time.Duration
 }
 type pendingCapture struct {
 	display, width int
@@ -63,20 +63,26 @@ type pendingCapture struct {
 	result         chan captureResult
 }
 
-func (h *Handler) capture(display, width int) captureResult {
+func (h *Handler) capture(display, width int) (result captureResult) {
+	started := time.Now()
+	defer func() { result.duration = time.Since(started) }()
 	if sized, ok := h.cfg.Backend.(interface {
 		CaptureSized(int, int) (image.Image, error)
 	}); ok {
 		im, err := sized.CaptureSized(display, width)
-		return captureResult{im, err}
+		return captureResult{image: im, err: err}
 	}
 	im, err := h.cfg.Backend.Capture(display)
-	return captureResult{im, err}
+	return captureResult{image: im, err: err}
 }
 
 // Keep at most one capture ahead, overlapping capture with JPEG encoding and
 // transfer. No unbounded frame queue or permanent capture loop when paused.
 func (h *Handler) nextCapture(display, width int) (image.Image, error) {
+	result := h.takeCapture(display, width)
+	return result.image, result.err
+}
+func (h *Handler) takeCapture(display, width int) captureResult {
 	var result captureResult
 	if pending := h.prefetched; pending != nil {
 		result = <-pending.result
@@ -92,7 +98,7 @@ func (h *Handler) nextCapture(display, width int) (image.Image, error) {
 		h.prefetched = pending
 		go func() { pending.result <- h.capture(display, width) }()
 	}
-	return result.image, result.err
+	return result
 }
 
 type limiter struct {
@@ -235,6 +241,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.info(w)
+	case "/v1/stream":
+		if r.Method != "GET" {
+			fail(w, 405, "method not allowed")
+			return
+		}
+		h.stream(w, r)
 	case "/v1/frame":
 		if r.Method != "GET" {
 			fail(w, 405, "method not allowed")
@@ -292,7 +304,7 @@ func (h *Handler) frame(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	if !h.frameLimit.allow(30) {
+	if !h.frameLimit.allow(40) {
 		fail(w, 429, "frame rate limit reached")
 		return
 	}
@@ -319,7 +331,7 @@ func (h *Handler) frame(w http.ResponseWriter, r *http.Request) {
 		im = resize(im, width)
 	}
 	var b bytes.Buffer
-	if err := jpeg.Encode(&b, im, &jpeg.Options{Quality: quality}); err != nil {
+	if err := encodeJPEG(&b, im, quality); err != nil {
 		fail(w, 500, "frame encoding failed")
 		return
 	}
@@ -379,10 +391,14 @@ func (h *Handler) input(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "input rate limit reached")
 		return
 	}
-	ds, err := h.cfg.Backend.Displays()
-	if err != nil && e.Type == "move" {
-		fail(w, 503, err.Error())
-		return
+	var ds []platform.Display
+	if e.Type == "move" {
+		var err error
+		ds, err = h.cfg.Backend.Displays()
+		if err != nil {
+			fail(w, 503, err.Error())
+			return
+		}
 	}
 	if err := platform.ValidateEvent(e, ds); err != nil {
 		fail(w, 400, err.Error())

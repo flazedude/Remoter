@@ -16,15 +16,15 @@ test('LAN headroom defaults only to direct local endpoints without a proxy', () 
 });
 
 test('frame pacing includes request time and never queues frames to catch up', () => {
-  assert.equal(nextFrameAt(0, 30, 10) - 10, 24);
+  assert.ok(Math.abs(nextFrameAt(0, 30, 10) - 10 - 23.333333) < 0.001);
   assert.equal(nextFrameAt(0, 30, 40) - 40, 0);
-  assert.equal(nextFrameAt(0, 15, 20) - 20, 47);
+  assert.ok(Math.abs(nextFrameAt(0, 15, 20) - 20 - 46.666667) < 0.001);
   assert.equal(qualityProfiles.lan.fps, 30);
 });
 
 test('late Windows timers do not accumulate a delay on every frame', () => {
   assert.equal(nextFrameAt(0, 30, 45), 45, 'capture already behind must request immediately');
-  assert.equal(nextFrameAt(100, 30, 125), 134);
+  assert.ok(Math.abs(nextFrameAt(100, 30, 125) - 133.333333) < 0.001);
   assert.equal(nextFrameAt(0, 30, 1000), 1000, 'no burst of queued catch-up frames');
 });
 

@@ -18,6 +18,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   const [displayId, setDisplayId] = useState(info.displays[0].id);
   const [quality, setQuality] = useState<keyof typeof qualityProfiles>(() => defaultQuality(device.endpoint, network));
   const [fps, setFps] = useState(0);
+  const [timings, setTimings] = useState('');
   const [streamWidth, setStreamWidth] = useState(0);
   const [frame, setFrame] = useState('');
   const [frameError, setFrameError] = useState('');
@@ -96,6 +97,8 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     let resolution = new StreamResolution();
     let previousQuality = config.current.quality;
     let nextAt = performance.now();
+    let currentURL = '';
+    let lastFrame = performance.now();
     async function poll() {
       if (!active) return;
       if (config.current.paused) { sampleStart = performance.now(); nextAt = sampleStart; sampleFrames = 0; setFps(0); timer = setTimeout(() => void poll(), 200); return; }
@@ -107,30 +110,51 @@ export default function Session({ device, info, network, disconnecting, onDiscon
         const profile = qualityProfiles[request.quality];
         if (request.quality !== previousQuality) { resolution = new StreamResolution(); previousQuality = request.quality; }
         const width = Math.max(320, Math.min(request.quality === 'lan' ? resolution.width : profile.width, selectedDisplay.width));
-        const next = await api.frame({ deviceId: device.id, displayId: request.displayId, quality: profile.quality, width });
+        const next = await api.frame({ deviceId: device.id, displayId: request.displayId, quality: profile.quality, width, fps: profile.fps });
         if (active && request.displayId === config.current.displayId && !config.current.paused) {
-          setFrame(next); setFrameError(''); setReceived(true);
-          setStreamWidth(Math.min(width, selectedDisplay.width));
-          if (request.quality === 'lan') resolution.sample(performance.now() - started);
+          const url = URL.createObjectURL(new Blob([new Uint8Array(next.bytes)], { type: 'image/jpeg' }));
+          const image = new Image(); image.src = url;
+          const decodeStart = performance.now();
+          try { await image.decode(); } catch (error) { URL.revokeObjectURL(url); throw error; }
+          if (!active) { URL.revokeObjectURL(url); return; }
+          if (request.displayId !== config.current.displayId || config.current.paused) { URL.revokeObjectURL(url); timer = setTimeout(() => void poll(), 0); return; }
+          const previousURL = currentURL; currentURL = url;
+          setFrame(url); setFrameError(''); setReceived(true);
+          // The decoded URL remains alive until React presents the next frame.
+          if (previousURL) URL.revokeObjectURL(previousURL);
+          const interval = performance.now() - lastFrame;
+          lastFrame = performance.now();
+          setStreamWidth(image.naturalWidth);
+          setTimings(`${next.streaming ? 'Stream' : 'Legacy host'} · Host ${(next.captureMs + next.encodeMs).toFixed(1)} ms (capture ${next.captureMs.toFixed(1)}, JPEG ${next.encodeMs.toFixed(1)}) · Decode ${(performance.now() - decodeStart).toFixed(1)} ms`);
+          if (request.quality === 'lan') resolution.sample(next.streaming ? Math.max(next.captureMs, next.encodeMs) + performance.now() - decodeStart : performance.now() - started, interval);
           sampleFrames++;
           const elapsed = performance.now() - sampleStart;
           if (elapsed >= 1000) { setFps(Math.round(sampleFrames * 1000 / elapsed)); sampleStart = performance.now(); sampleFrames = 0; }
         }
         nextAt = nextFrameAt(nextAt, profile.fps, performance.now());
-        delay = Math.max(0, nextAt - performance.now());
+        // Streaming hosts pace capture. Additional client pacing accumulates jitter.
+        delay = next.streaming ? 0 : Math.max(0, nextAt - performance.now());
       } catch (error) {
-        if (active) { setFrameError(errorMessage(error)); stopControl(); }
-        delay = 1500;
+        if (active) {
+          // A single busy frame must not disable input. Stop on a genuinely stale screen.
+          if (performance.now() - lastFrame > 1000) { setFrameError(errorMessage(error)); stopControl(); }
+        }
+        delay = 100;
         setFps(0); sampleStart = performance.now(); nextAt = sampleStart + delay; sampleFrames = 0;
       }
-      // Exactly one outstanding frame request; slow capture supplies backpressure.
+      // One outstanding delivery/decode; the main process retains only the latest frame.
       if (active) {
         if (delay > 0) timer = setTimeout(() => void poll(), delay);
         else void poll(); // The completed IPC request already yielded the event loop.
       }
     }
+    const watchdog = setInterval(() => {
+      if (!config.current.paused && controlRef.current && performance.now() - lastFrame > 1000) {
+        setFrameError('Screen updates stalled. Waiting for fresh frames.'); stopControl(); setFps(0);
+      }
+    }, 250);
     void poll();
-    return () => { active = false; clearTimeout(timer); };
+    return () => { active = false; clearInterval(watchdog); clearTimeout(timer); if (currentURL) URL.revokeObjectURL(currentURL); };
   }, [device.id, info.displays, stopControl]);
 
   useEffect(() => {
@@ -283,6 +307,6 @@ export default function Session({ device, info, network, disconnecting, onDiscon
       {frameError && <div className="capture-error"><Info size={24} /><strong>Waiting for the host</strong><p>{frameError}</p><span>Reconnecting automatically…</span></div>}
       {paused && <div className="paused-indicator"><Pause size={14} />Screen updates paused</div>}
     </div>
-    <div className="session-footer"><span><span className={`session-status-dot${frameError ? ' interrupted' : received ? ' live' : ''}`} />{closing ? 'Disconnecting' : paused ? 'Paused' : frameError ? 'Connection interrupted' : received ? 'Screen sharing' : 'Connecting'}</span><span>{control ? <><Keyboard size={13} />Press Esc to release control</> : info.capabilities.input ? 'Select “View only” to enable control' : 'The host allows viewing only'}</span><span className="capture-cadence" title="Received frame rate; capture speed and connection determine actual FPS">{fps} FPS · Target {qualityProfiles[quality].fps}{streamWidth ? ` · ${streamWidth}px` : ''}{quality === 'lan' ? ' · LAN' : ''}</span></div>
+    <div className="session-footer"><span><span className={`session-status-dot${frameError ? ' interrupted' : received ? ' live' : ''}`} />{closing ? 'Disconnecting' : paused ? 'Paused' : frameError ? 'Connection interrupted' : received ? 'Screen sharing' : 'Connecting'}</span><span>{control ? <><Keyboard size={13} />Press Esc to release control</> : info.capabilities.input ? 'Select “View only” to enable control' : 'The host allows viewing only'}</span><span className="capture-cadence" title={timings || "Decoded frame rate; host processing and connection determine actual FPS"}>{fps} FPS · Target {qualityProfiles[quality].fps}{streamWidth ? ` · ${streamWidth}px` : ''}{quality === 'lan' ? ' · LAN' : ''}</span></div>
   </div>;
 }

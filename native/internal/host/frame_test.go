@@ -135,7 +135,7 @@ func TestOptInCapturePerformance(t *testing.T) {
 			if width == 3840 {
 				quality = 90
 			}
-			if err = jpeg.Encode(&out, im, &jpeg.Options{Quality: quality}); err != nil {
+			if err = encodeJPEG(&out, im, quality); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := jpeg.DecodeConfig(bytes.NewReader(out.Bytes()))
@@ -162,7 +162,7 @@ func TestOptInCapturePerformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			var out bytes.Buffer
-			if err = jpeg.Encode(&out, im, &jpeg.Options{Quality: 80}); err != nil {
+			if err = encodeJPEG(&out, im, 80); err != nil {
 				t.Fatal(err)
 			}
 		}

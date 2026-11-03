@@ -1,7 +1,7 @@
 import type { NetworkSettings } from './types';
 
 export const qualityProfiles = {
-  lan: { quality: 80, width: 1920, fps: 30 },
+  lan: { quality: 85, width: 1920, fps: 30 },
   original: { quality: 90, width: 3840, fps: 30 },
   balanced: { quality: 70, width: 1600, fps: 30 },
   sharp: { quality: 85, width: 1920, fps: 30 },
@@ -24,7 +24,7 @@ export function defaultQuality(endpoint: string, network: Pick<NetworkSettings, 
 // frames after capture falls behind. Windows timers can otherwise add ~15 ms
 // to every frame and turn a 30-FPS pipeline into a roughly 20-FPS stream.
 export function nextFrameAt(previous: number, fps: number, now: number): number {
-  return Math.max(previous + Math.ceil(1000 / fps), now);
+  return Math.max(previous + 1000 / fps, now);
 }
 
 // Adjust only the smooth LAN preset. Use sustained measurements and different
@@ -33,17 +33,19 @@ export class StreamResolution {
   width = 1920;
   private elapsed = 0;
   private frames = 0;
+  private cadence = 0;
   private recovery = 0;
-  sample(milliseconds: number): number {
-    this.elapsed += milliseconds;
+  sample(milliseconds: number, interval = milliseconds): number {
+    this.elapsed += milliseconds; this.cadence += interval;
     if (++this.frames < 30) return this.width;
     const average = this.elapsed / this.frames;
-    this.elapsed = 0; this.frames = 0;
+    const cadence = this.cadence / this.frames;
+    this.elapsed = 0; this.frames = 0; this.cadence = 0;
     const widths = [960, 1280, 1600, 1920];
     const index = widths.indexOf(this.width);
-    if (average > 38) { this.width = widths[Math.max(0, index - 1)]; this.recovery = 0; }
-    else if (average < 22 && ++this.recovery >= 5) { this.width = widths[Math.min(widths.length - 1, index + 1)]; this.recovery = 0; }
-    else if (average >= 22) this.recovery = 0;
+    if (average > 30 || cadence > 38) { this.width = widths[Math.max(0, index - 1)]; this.recovery = 0; }
+    else if (average < 22 && cadence < 35 && ++this.recovery >= 5) { this.width = widths[Math.min(widths.length - 1, index + 1)]; this.recovery = 0; }
+    else if (average >= 22 || cadence >= 35) this.recovery = 0;
     return this.width;
   }
 }

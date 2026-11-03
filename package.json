@@ -1,6 +1,6 @@
 {
   "name": "remoter",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "private": true,
   "description": "An open-source remote desktop application powered by Remoter Engine.",
   "license": "Apache-2.0",
@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test packages/engine/test/*.test.ts tests/*.test.ts apps/desktop/src/*.test.ts",
     "test:desktop": "tsx scripts/smoke-desktop.ts",
+    "test:package": "tsx scripts/smoke-package.ts",
     "test:integration": "tsx scripts/smoke-engine.ts",
     "test:native": "cd native && go test ./...",
     "runtime": "tsx scripts/runtime.ts",
@@ -49,6 +50,7 @@
     "vite": "^7.3.0"
   },
   "build": {
+    "afterPack": "scripts/macos-identity.cjs",
     "appId": "org.remoter.desktop",
     "productName": "Remoter",
     "electronDist": "node_modules/electron/dist",
@@ -87,11 +89,13 @@
       "artifactName": "Remoter-Portable-${version}-${arch}.${ext}"
     },
     "mac": {
+      "minimumSystemVersion": "15.0",
       "target": [
         "dmg"
       ],
       "category": "public.app-category.utilities",
       "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Remoter finds and connects to computers you choose on your local network for remote desktop access.",
         "NSScreenCaptureUsageDescription": "Remoter shares your display with devices you explicitly pair.",
         "NSAccessibilityUsageDescription": "Remoter controls keyboard and mouse only when you enable remote input."
       }

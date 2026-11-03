@@ -110,6 +110,20 @@ async function exercise(client: EngineClient): Promise<number> {
   } finally {
     await client.input({ type: 'releaseAll' });
   }
+  const abort = new AbortController();
+  const stream = client.frames({ display: display.id, quality: 85, width: 1280, fps: 30 }, abort.signal);
+  const started = performance.now();
+  try {
+    for (let i = 0; i < 36; i++) {
+      const result = await stream.next();
+      assert.equal(result.value!.streaming, true);
+      assert.equal(result.value!.width, 1280);
+      if (i === 10) await client.input({ type: 'releaseAll' });
+    }
+    const fps = 35 * 1000 / (performance.now() - started);
+    assert.ok(fps >= 25 && fps <= 33, `unexpected stream cadence: ${fps.toFixed(1)}`);
+    console.log(`PASS stream: 1280px Q85, ${fps.toFixed(1)} FPS, input responsive, route ${client.route.mode}.`);
+  } finally { abort.abort(); await stream.return(undefined); }
   return frame.length;
 }
 

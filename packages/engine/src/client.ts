@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual, X509Certificate } from 'node:crypto';
 import http from 'node:http';
+import { decodeFrameStream, type StreamFrame } from './frame-stream.js';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
@@ -88,6 +89,44 @@ export class EngineClient {
     const { body, contentType } = await this.request('GET', `/v1/frame?${query}`, undefined, 16 * 1024 * 1024);
     if (!contentType?.startsWith('image/jpeg') || body.length < 4 || body[0] !== 0xff || body[1] !== 0xd8) throw new Error('The host returned an invalid frame.');
     return body;
+  }
+
+  async *frames(options: FrameOptions & { fps?: number } = {}, signal?: AbortSignal): AsyncGenerator<StreamFrame> {
+    const query = new URLSearchParams({
+      display: String(boundedInteger(options.display ?? 0, 0, 31, 'display')),
+      quality: String(boundedInteger(options.quality ?? 85, 20, 90, 'JPEG quality')),
+      width: String(boundedInteger(options.width ?? 1920, 320, 3840, 'frame width')),
+      fps: String(boundedInteger(options.fps ?? 30, 1, 30, 'frame rate')),
+    });
+    if (this.closed) throw new Error('The session is closed.');
+    const request = https.request(new URL(`/v1/stream?${query}`, this.endpoint), {
+      agent: this.agent, signal, headers: { Authorization: `Bearer ${this.invitation.token}`, Accept: 'application/x-remoter-frames' },
+    });
+    request.setTimeout(REQUEST_TIMEOUT, () => request.destroy(new Error('The host screen stream timed out.')));
+    try {
+      const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+        request.once('error', reject); request.once('response', resolve); request.end();
+      });
+      if (response.statusCode === 404) {
+        response.resume();
+        // Compatibility with already-installed snapshot-only hosts.
+        while (!this.closed && !signal?.aborted) {
+          const started = Date.now();
+          const bytes = await this.frame(options);
+          yield { bytes, width: 0, height: 0, captureMs: 0, encodeMs: 0, streaming: false };
+          await new Promise<void>(resolve => {
+            const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+            const timer = setTimeout(done, Math.max(0, 1000 / (options.fps ?? 30) - (Date.now() - started)));
+            signal?.addEventListener('abort', done, { once: true });
+          });
+        }
+        return;
+      }
+      if (response.statusCode !== 200 || response.headers['content-type'] !== 'application/x-remoter-frames; version=1') {
+        response.resume(); throw new Error(`The host refused the screen stream (HTTP ${response.statusCode}).`);
+      }
+      yield* decodeFrameStream(response);
+    } finally { request.destroy(); }
   }
 
   async input(event: InputEvent): Promise<void> {
