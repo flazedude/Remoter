@@ -231,6 +231,43 @@ try {
     await api.input({ deviceId, event: { type: 'key', code: 'KeyA', down: true } });
     await api.input({ deviceId, event: { type: 'releaseAll' } });
   });
+  // Temporary input failures, a saturated queue, and a stale screen must all
+  // preserve the user's selected control mode. Use synthetic pixels only.
+  const recoveryFrame = await display.evaluate((image: HTMLImageElement) => {
+    const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    canvas.getContext('2d')!.drawImage(image, 0, 0);
+    return { bytes: Array.from(Uint8Array.from(atob(canvas.toDataURL('image/jpeg').split(',')[1]), char => char.charCodeAt(0))), width: canvas.width, height: canvas.height, captureMs: 1, encodeMs: 1, streaming: true };
+  });
+  await application.evaluate(({ ipcMain }, frame) => {
+    const interruptedUntil = Date.now() + 1800;
+    ipcMain.removeHandler('remoter:frame');
+    ipcMain.handle('remoter:frame', async () => {
+      if (Date.now() < interruptedUntil) throw new Error('Synthetic screen interruption');
+      await new Promise(resolve => setTimeout(resolve, 33));
+      return { ...frame, bytes: new Uint8Array(frame.bytes) };
+    });
+    ipcMain.removeHandler('remoter:input');
+    ipcMain.handle('remoter:input', async (_event, options) => {
+      if (options.event.type === 'releaseAll') return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      if (Date.now() < interruptedUntil) throw new Error('Synthetic input interruption');
+    });
+  }, recoveryFrame);
+  await remoteScreen.focus();
+  await remoteScreen.evaluate(element => {
+    for (let i = 0; i < 300; i++) for (const type of ['keydown', 'keyup']) {
+      element.dispatchEvent(new KeyboardEvent(type, { code: 'KeyA', bubbles: true, cancelable: true }));
+    }
+  });
+  await page.waitForTimeout(1300);
+  assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1, 'Input congestion, errors and stale video must never switch to View only');
+  await page.waitForTimeout(900);
+  await remoteScreen.press('a');
+  await page.waitForTimeout(200);
+  assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1);
+  await page.getByRole('button', { name: 'Pause screen updates', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1, 'Pausing video must retain control mode');
+  await page.getByRole('button', { name: 'Resume screen updates', exact: true }).click();
   await page.screenshot({ path: path.join(resultDir, 'desktop-session.png') });
   await page.getByRole('button', { name: 'Disconnect and return to devices' }).click();
   await page.getByRole('heading', { name: 'Devices', exact: true }).waitFor();

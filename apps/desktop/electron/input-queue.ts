@@ -11,7 +11,7 @@ export class InputQueue {
     if (this.closed) return Promise.reject(new Error('The session is closed.'));
     if (event.type === 'releaseAll') this.clear();
     if (event.type === 'move' && this.pending.at(-1)?.event.type === 'move') this.pending.pop()!.resolve();
-    if (this.pending.length >= 256) return Promise.reject(new Error('Remote input is congested. Pause control and reconnect.'));
+    if (this.pending.length >= 256) return Promise.reject(new Error('Remote input is catching up.'));
     return new Promise((resolve, reject) => {
       this.pending.push({ event, resolve, reject });
       if (this.deliverBatch) {

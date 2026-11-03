@@ -38,7 +38,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   const inputQueue = useRef(Promise.resolve());
   const queuedInputs = useRef(0);
   const inputBarrier = useRef<Promise<void> | null>(null);
-  const inputBusySince = useRef(0);
+  const inputRecovery = useRef<Promise<void> | null>(null);
   const inputGeneration = useRef(0);
   const forwardedModifiers = useRef(new Set<string>());
   const moveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -51,30 +51,30 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   displayRef.current = display;
 
   const send = useCallback((event: RemoteInput) => {
-    // Preserve button/key ordering even if requests finish at different times.
-    if (event.type !== 'releaseAll' && (queuedInputs.current >= 256 || (queuedInputs.current >= 32 && performance.now() - inputBusySince.current > 1000))) {
-      inputGeneration.current++;
-      controlRef.current = false;
-      setControl(false);
-      forwardedModifiers.current.clear();
-      setInputError('Input paused because this connection is too slow. Try again when it recovers.');
-      inputQueue.current = api.input({ deviceId: device.id, event: { type: 'releaseAll' } }).catch(() => undefined);
-      return inputQueue.current;
+    // Bound pending work without ever changing the user's control selection.
+    if (event.type !== 'releaseAll' && (queuedInputs.current >= 256 || inputRecovery.current)) {
+      if (!inputRecovery.current) {
+        inputGeneration.current++;
+        forwardedModifiers.current.clear();
+        setInputError('Input is catching up. Control remains enabled.');
+        const recovery = api.input({ deviceId: device.id, event: { type: 'releaseAll' } }).catch(() => undefined);
+        inputRecovery.current = recovery;
+        void recovery.finally(() => { if (inputRecovery.current === recovery) inputRecovery.current = null; });
+      }
+      return inputRecovery.current!;
     }
     const generation = inputGeneration.current;
-    if (!queuedInputs.current) inputBusySince.current = performance.now();
     queuedInputs.current++;
     const deliver = async () => {
       if (event.type !== 'releaseAll' && (generation !== inputGeneration.current || !controlRef.current)) return;
       await api.input({ deviceId: device.id, event });
+      if (event.type !== 'releaseAll' && generation === inputGeneration.current) setInputError('');
     };
     // Ordered IPC reaches the main-process batching queue without a network
     // round trip per renderer event. Clipboard operations remain explicit barriers.
     const pending = (event.type === 'releaseAll' || !inputBarrier.current ? deliver() : inputBarrier.current.then(deliver)).catch(async (error) => {
-      if (event.type !== 'releaseAll') {
+      if (event.type !== 'releaseAll' && generation === inputGeneration.current) {
         inputGeneration.current++;
-        controlRef.current = false;
-        setControl(false);
         setInputError(errorMessage(error));
         forwardedModifiers.current.clear();
         await api.input({ deviceId: device.id, event: { type: 'releaseAll' } }).catch(() => undefined);
@@ -147,8 +147,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
         delay = next.streaming ? 0 : Math.max(0, nextAt - performance.now());
       } catch (error) {
         if (active) {
-          // A single busy frame must not disable input. Stop on a genuinely stale screen.
-          if (performance.now() - lastFrame > 1000) { setFrameError(errorMessage(error)); stopControl(); }
+          setFrameError(errorMessage(error));
         }
         delay = 100;
         setFps(0); sampleStart = performance.now(); nextAt = sampleStart + delay; sampleFrames = 0;
@@ -161,12 +160,12 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     }
     const watchdog = setInterval(() => {
       if (!config.current.paused && controlRef.current && performance.now() - lastFrame > 1000) {
-        setFrameError('Screen updates stalled. Waiting for fresh frames.'); stopControl(); setFps(0);
+        setFrameError('Screen updates stalled. Waiting for fresh frames.'); setFps(0);
       }
     }, 250);
     void poll();
     return () => { active = false; clearInterval(watchdog); clearTimeout(timer); if (currentURL) URL.revokeObjectURL(currentURL); };
-  }, [device.id, info.displays, stopControl]);
+  }, [device.id, info.displays]);
 
   useEffect(() => {
     const onBlur = () => { setFocused(false); void release(); };
@@ -281,19 +280,19 @@ export default function Session({ device, info, network, disconnecting, onDiscon
 
   return <div className="session-layout" ref={container}>
     <div className="session-toolbar"><button className="icon-button session-back" onClick={() => void disconnect()} disabled={disconnecting || closing} aria-label="Disconnect and return to devices" title="Disconnect">{disconnecting || closing ? <LoaderCircle className="spin" size={18} /> : <ArrowLeft size={19} />}</button><div className="session-identity"><strong>{device.name}</strong><span>{info.os} · {display.width} × {display.height}</span></div><div className="session-tools">
-      <label className="compact-select"><Monitor size={15} /><span className="sr-only">Display</span><select disabled={closing} value={displayId} onChange={(event) => { stopControl(); setFrame(''); setReceived(false); setDisplayId(Number(event.target.value)); }}>{info.displays.map((item, index) => <option key={item.id} value={item.id}>{item.name || `Display ${index + 1}`}</option>)}</select><ChevronDown size={12} /></label>
+      <label className="compact-select"><Monitor size={15} /><span className="sr-only">Display</span><select disabled={closing} value={displayId} onChange={(event) => { void release(); setFrame(''); setReceived(false); setDisplayId(Number(event.target.value)); }}>{info.displays.map((item, index) => <option key={item.id} value={item.id}>{item.name || `Display ${index + 1}`}</option>)}</select><ChevronDown size={12} /></label>
       <label className="compact-select quality-select"><span className="sr-only">Picture quality</span><select disabled={closing} value={quality} onChange={(event) => setQuality(event.target.value as keyof typeof qualityProfiles)}><option value="lan">LAN · Smooth</option><option value="original">Original · Max quality</option><option value="balanced">Balanced</option><option value="sharp">Sharper image</option><option value="fast">Less bandwidth</option></select><ChevronDown size={12} /></label>
       <span className="toolbar-divider" />
       <button className={`icon-button${sharing.sound ? ' sharing-active' : ''}`} disabled={closing || !info.capabilities.audio} aria-label={sharing.sound ? 'Mute host sound' : 'Hear host sound'} aria-pressed={sharing.sound} title={info.capabilities.audio ? 'Hear system audio from this host' : 'Enable system audio on the host before sharing'} onClick={() => void sharing.toggleSound()}>{sharing.sound ? <Volume2 size={17} /> : <VolumeX size={17} />}</button>
       <button className={`icon-button${sharing.clipboard ? ' sharing-active' : ''}`} disabled={closing || !info.capabilities.clipboard} aria-label="Sync text clipboard" aria-pressed={sharing.clipboard} title={info.capabilities.clipboard ? 'Automatically sync copied text in both directions' : 'Enable two-way text clipboard on the host before sharing'} onClick={sharing.toggleClipboard}><Clipboard size={17} /></button>
-      <button className={`button small control-button${control ? ' primary' : ''}`} disabled={closing || !info.capabilities.input || !received || !!frameError || paused} title={info.capabilities.input ? 'Press Escape to release control' : 'Keyboard and mouse control are disabled on this host'} aria-pressed={control} onPointerDown={(event) => event.preventDefault()} onClick={toggleControl}>{control ? <MousePointer2 size={15} /> : <ShieldCheck size={15} />}{control ? 'Controlling' : 'View only'}</button>
-      <button className="icon-button" title={paused ? 'Resume screen updates' : 'Pause screen updates'} aria-label={paused ? 'Resume screen updates' : 'Pause screen updates'} aria-pressed={paused} disabled={closing} onClick={() => { stopControl(); setPaused(!paused); }}>{paused ? <Play size={16} /> : <Pause size={16} />}</button>
-      <button className="icon-button" title={fullscreen ? 'Exit full screen' : 'Full screen'} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} disabled={closing} onClick={() => { stopControl(); const action = document.fullscreenElement ? document.exitFullscreen() : container.current?.requestFullscreen(); action?.catch((error) => setInputError(errorMessage(error))); }}><Maximize2 size={16} /></button>
+      <button className={`button small control-button${control ? ' primary' : ''}`} disabled={closing || !info.capabilities.input || !received} title={info.capabilities.input ? 'Press Escape to release control' : 'Keyboard and mouse control are disabled on this host'} aria-pressed={control} onPointerDown={(event) => event.preventDefault()} onClick={toggleControl}>{control ? <MousePointer2 size={15} /> : <ShieldCheck size={15} />}{control ? 'Controlling' : 'View only'}</button>
+      <button className="icon-button" title={paused ? 'Resume screen updates' : 'Pause screen updates'} aria-label={paused ? 'Resume screen updates' : 'Pause screen updates'} aria-pressed={paused} disabled={closing} onClick={() => { void release(); setPaused(!paused); }}>{paused ? <Play size={16} /> : <Pause size={16} />}</button>
+      <button className="icon-button" title={fullscreen ? 'Exit full screen' : 'Full screen'} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} disabled={closing} onClick={() => { void release(); const action = document.fullscreenElement ? document.exitFullscreen() : container.current?.requestFullscreen(); action?.catch((error) => setInputError(errorMessage(error))); }}><Maximize2 size={16} /></button>
     </div></div>
 
     {info.synthetic && <div className="preview-banner"><Info size={14} />Synthetic test display · No physical desktop is being captured.</div>}
     {info.warning && <div className="session-error" role="status"><Info size={15} />{info.warning}</div>}
-    {inputError && <div className="session-error" role="alert"><Info size={15} />Control stopped: {inputError}</div>}
+    {inputError && <div className="session-error" role="alert"><Info size={15} />Input: {inputError}</div>}
     {sharing.error && <div className="session-error" role="alert"><Info size={15} />{sharing.error}</div>}
     {sharing.clipboard && <div className="clipboard-tools"><span><Clipboard size={14} />Text clipboard sync on</span><button className="button small" disabled={closing} onClick={() => void sharing.transferClipboard('send').catch(() => {})}><ClipboardPaste size={14} />Send clipboard to host</button><button className="button small" disabled={closing} onClick={() => void sharing.transferClipboard('receive').catch(() => {})}><Copy size={14} />Get host clipboard</button></div>}
 
@@ -310,7 +309,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
         if (sharing.clipboard && event.code === 'KeyV' && (event.ctrlKey || event.metaKey) && !event.repeat) {
           // Reconcile both sides before paste. An unconditional send can replace
           // a fresh remote copy with stale local text before the next sync poll.
-          inputBarrier.current = inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(() => { stopControl(); });
+          inputBarrier.current = inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(error => { setInputError(`Clipboard: ${errorMessage(error)}`); void release(); });
           const barrier = inputBarrier.current; void barrier.finally(() => { if (inputBarrier.current === barrier) inputBarrier.current = null; });
         }
         if (event.code) {
