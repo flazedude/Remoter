@@ -28,3 +28,20 @@ test('pointer coalescing preserves click order and bounds queued work', async ()
   queue.close();
   await assert.rejects(queue.send({ type: 'releaseAll' }), /closed/);
 });
+
+test('typing bursts use bounded ordered batches instead of a round trip per event', async () => {
+  const batches: RemoteInput[][] = [];
+  const queue = new InputQueue(async () => { throw new Error('single delivery used'); }, async events => { batches.push(events); });
+  const events: RemoteInput[] = Array.from({ length: 80 }, (_, i) => ({ type: 'key', code: 'KeyA', down: i % 2 === 0 }));
+  await Promise.all(events.map(event => queue.send(event)));
+  assert.deepEqual(batches.flat(), events);
+  assert.ok(batches.length <= 3);
+  assert.ok(batches.every(batch => batch.length <= 32));
+});
+
+test('release supersedes a typing burst before the batch is delivered', async () => {
+  const delivered: RemoteInput[] = [];
+  const queue = new InputQueue(async () => {}, async batch => { delivered.push(...batch); });
+  await Promise.all([queue.send({ type: 'key', code: 'KeyA', down: true }), queue.send({ type: 'releaseAll' })]);
+  assert.deepEqual(delivered, [{ type: 'releaseAll' }]);
+});

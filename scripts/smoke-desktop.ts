@@ -133,6 +133,14 @@ try {
   assert.equal(await remoteScreen.evaluate(element => getComputedStyle(element).cursor), 'default');
   await page.waitForFunction(() => Number(document.querySelector('.capture-cadence')?.textContent?.match(/^(\d+) FPS/)?.[1]) >= 27, undefined, { timeout: 20000 });
   const cadence = await page.locator('.capture-cadence').innerText();
+  await remoteScreen.evaluate(element => {
+    for (let i = 0; i < 40; i++) {
+      for (const type of ['keydown', 'keyup']) element.dispatchEvent(new KeyboardEvent(type, { code: 'KeyA', bubbles: true, cancelable: true }));
+    }
+  });
+  await page.waitForTimeout(350);
+  assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1, 'A short 80-event typing burst must not disable control');
+  assert.equal(await page.getByRole('alert').filter({ hasText: 'Input paused' }).count(), 0);
   // The host clipboard is synthetic. Stub Electron's local clipboard too, so
   // these copy/paste checks never read or modify the user's real clipboard.
   await application.evaluate(({ clipboard }) => {

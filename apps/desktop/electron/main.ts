@@ -415,7 +415,7 @@ function registerIPC() {
     if (!client) throw new Error('Start a session first.');
     const event = validateInput(options.event);
     let queue = inputQueues.get(id);
-    if (!queue) { queue = new InputQueue(input => client.input(input)); inputQueues.set(id, queue); }
+    if (!queue) { queue = new InputQueue(input => client.input(input), events => client.inputs(events)); inputQueues.set(id, queue); }
     return queue.send(event);
   });
   handle('disconnect', async raw => { restoredDeviceId = undefined; await disconnect(findDevice(raw).id); await persist(); return publicState(); });

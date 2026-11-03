@@ -37,7 +37,10 @@ export default function Session({ device, info, network, disconnecting, onDiscon
   const autoControlPending = useRef(info.capabilities.input);
   const inputQueue = useRef(Promise.resolve());
   const queuedInputs = useRef(0);
+  const inputBarrier = useRef<Promise<void> | null>(null);
+  const inputBusySince = useRef(0);
   const inputGeneration = useRef(0);
+  const forwardedModifiers = useRef(new Set<string>());
   const moveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingMove = useRef<RemoteInput | null>(null);
   const moveSending = useRef(false);
@@ -49,33 +52,41 @@ export default function Session({ device, info, network, disconnecting, onDiscon
 
   const send = useCallback((event: RemoteInput) => {
     // Preserve button/key ordering even if requests finish at different times.
-    if (event.type !== 'releaseAll' && queuedInputs.current >= 32) {
+    if (event.type !== 'releaseAll' && (queuedInputs.current >= 256 || (queuedInputs.current >= 32 && performance.now() - inputBusySince.current > 1000))) {
       inputGeneration.current++;
       controlRef.current = false;
       setControl(false);
+      forwardedModifiers.current.clear();
       setInputError('Input paused because this connection is too slow. Try again when it recovers.');
-      inputQueue.current = inputQueue.current.then(() => api.input({ deviceId: device.id, event: { type: 'releaseAll' } })).catch(() => undefined);
+      inputQueue.current = api.input({ deviceId: device.id, event: { type: 'releaseAll' } }).catch(() => undefined);
       return inputQueue.current;
     }
     const generation = inputGeneration.current;
+    if (!queuedInputs.current) inputBusySince.current = performance.now();
     queuedInputs.current++;
-    inputQueue.current = inputQueue.current.then(async () => {
+    const deliver = async () => {
       if (event.type !== 'releaseAll' && (generation !== inputGeneration.current || !controlRef.current)) return;
       await api.input({ deviceId: device.id, event });
-    }).catch(async (error) => {
+    };
+    // Ordered IPC reaches the main-process batching queue without a network
+    // round trip per renderer event. Clipboard operations remain explicit barriers.
+    const pending = (event.type === 'releaseAll' || !inputBarrier.current ? deliver() : inputBarrier.current.then(deliver)).catch(async (error) => {
       if (event.type !== 'releaseAll') {
         inputGeneration.current++;
         controlRef.current = false;
         setControl(false);
         setInputError(errorMessage(error));
+        forwardedModifiers.current.clear();
         await api.input({ deviceId: device.id, event: { type: 'releaseAll' } }).catch(() => undefined);
       }
     }).finally(() => { queuedInputs.current--; });
-    return inputQueue.current;
+    inputQueue.current = Promise.all([inputQueue.current, pending]).then(() => undefined);
+    return pending;
   }, [device.id]);
 
   const release = useCallback(() => {
     inputGeneration.current++;
+    forwardedModifiers.current.clear();
     clearTimeout(moveTimer.current);
     moveTimer.current = undefined;
     pendingMove.current = null;
@@ -232,6 +243,19 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
+  function syncModifiers(event: { code: string; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }) {
+    const flags = { ShiftLeft: event.shiftKey, ControlLeft: event.ctrlKey, AltLeft: event.altKey, MetaLeft: event.metaKey };
+    for (const [code, down] of Object.entries(flags)) {
+      const right = code.replace('Left', 'Right');
+      if (event.code === code || event.code === right) continue;
+      const held = forwardedModifiers.current.has(code) || forwardedModifiers.current.has(right);
+      if (down && !held) { forwardedModifiers.current.add(code); void send({ type: 'key', code, down: true }); }
+      else if (!down && held) for (const key of [code, right]) {
+        if (forwardedModifiers.current.delete(key)) void send({ type: 'key', code: key, down: false });
+      }
+    }
+  }
+
   function toggleControl() {
     setInputError('');
     if (control) stopControl();
@@ -281,10 +305,13 @@ export default function Session({ device, info, network, disconnecting, onDiscon
         if (!controlRef.current) return;
         event.preventDefault(); event.stopPropagation();
         if (event.code === 'Escape') { stopControl(); return; }
+        syncModifiers(event);
+        if (/^(Shift|Control|Alt|Meta)(Left|Right)$/.test(event.code)) forwardedModifiers.current.add(event.code);
         if (sharing.clipboard && event.code === 'KeyV' && (event.ctrlKey || event.metaKey) && !event.repeat) {
           // Reconcile both sides before paste. An unconditional send can replace
           // a fresh remote copy with stale local text before the next sync poll.
-          inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(() => { stopControl(); });
+          inputBarrier.current = inputQueue.current = inputQueue.current.then(() => sharing.transferClipboard('paste')).catch(() => { stopControl(); });
+          const barrier = inputBarrier.current; void barrier.finally(() => { if (inputBarrier.current === barrier) inputBarrier.current = null; });
         }
         if (event.code) {
           const sent = send({ type: 'key', code: event.code, down: true });
@@ -295,7 +322,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
           }
         }
       }}
-      onKeyUp={(event) => { if (!controlRef.current) return; event.preventDefault(); event.stopPropagation(); if (event.code) void send({ type: 'key', code: event.code, down: false }); }}>
+      onKeyUp={(event) => { if (!controlRef.current) return; event.preventDefault(); event.stopPropagation(); syncModifiers(event); forwardedModifiers.current.delete(event.code); if (event.code) void send({ type: 'key', code: event.code, down: false }); }}>
       {frame && <img className="desktop-frame" src={frame} alt={`Remote display of ${device.name}`} draggable={false} onLoad={() => {
         if (autoControlPending.current && !closingRef.current && !config.current.paused) {
           autoControlPending.current = false;

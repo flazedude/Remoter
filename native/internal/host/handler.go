@@ -253,6 +253,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.frame(w, r)
+	case "/v1/inputs":
+		if r.Method != "POST" {
+			fail(w, 405, "method not allowed")
+			return
+		}
+		h.inputs(w, r)
 	case "/v1/input":
 		if r.Method != "POST" {
 			fail(w, 405, "method not allowed")
@@ -387,22 +393,44 @@ func (h *Handler) input(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "expected a single JSON object")
 		return
 	}
-	if e.Type != "releaseAll" && !h.inputLimit.allow(240) {
-		fail(w, 429, "input rate limit reached")
+	h.deliverInputs(w, []platform.InputEvent{e})
+}
+func (h *Handler) inputs(w http.ResponseWriter, r *http.Request) {
+	if !h.cfg.AllowInput || !h.cfg.Backend.Capabilities().Input {
+		fail(w, 403, "host is view-only or input permission is unavailable")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var batch struct {
+		Events []platform.InputEvent `json:"events"`
+	}
+	if err := dec.Decode(&batch); err != nil || len(batch.Events) < 1 || len(batch.Events) > 32 {
+		fail(w, 400, "invalid input batch")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		fail(w, 400, "expected a single JSON object")
+		return
+	}
+	h.deliverInputs(w, batch.Events)
+}
+func (h *Handler) deliverInputs(w http.ResponseWriter, events []platform.InputEvent) {
 	var ds []platform.Display
-	if e.Type == "move" {
-		var err error
-		ds, err = h.cfg.Backend.Displays()
-		if err != nil {
-			fail(w, 503, err.Error())
+	for _, e := range events {
+		if e.Type == "move" && ds == nil {
+			var err error
+			ds, err = h.cfg.Backend.Displays()
+			if err != nil {
+				fail(w, 503, err.Error())
+				return
+			}
+		}
+		if err := platform.ValidateEvent(e, ds); err != nil {
+			fail(w, 400, err.Error())
 			return
 		}
-	}
-	if err := platform.ValidateEvent(e, ds); err != nil {
-		fail(w, 400, err.Error())
-		return
 	}
 	h.inputMu.Lock()
 	defer h.inputMu.Unlock()
@@ -410,23 +438,31 @@ func (h *Handler) input(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "host is stopping")
 		return
 	}
-	if e.Type == "releaseAll" {
-		h.releaseHeld()
-		writeJSON(w, 200, map[string]bool{"ok": true})
-		return
-	}
-	if err := h.cfg.Backend.Input(e); err != nil {
-		fail(w, 503, err.Error())
-		return
-	}
-	h.lastInput = time.Now()
-	if e.Type == "key" || e.Type == "button" {
-		key := e.Type + ":" + e.Code + e.Button
-		if e.Down {
-			h.held[key] = e
-		} else {
-			delete(h.held, key)
+	for _, e := range events {
+		if e.Type != "releaseAll" && !h.inputLimit.allow(240) {
+			h.releaseHeld()
+			fail(w, 429, "input rate limit reached")
+			return
+		}
+		if e.Type == "releaseAll" {
+			h.releaseHeld()
+			continue
+		}
+		if err := h.cfg.Backend.Input(e); err != nil {
+			h.releaseHeld()
+			fail(w, 503, err.Error())
+			return
+		}
+		h.lastInput = time.Now()
+		if e.Type == "key" || e.Type == "button" {
+			key := e.Type + ":" + e.Code + e.Button
+			if e.Down {
+				h.held[key] = e
+			} else {
+				delete(h.held, key)
+			}
 		}
 	}
+
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }

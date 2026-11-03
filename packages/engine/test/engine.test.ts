@@ -86,6 +86,16 @@ test('old hosts fall back to paced snapshots and preserve TLS authentication', a
   } finally { client.close(); target.close(); }
 });
 
+test('old hosts deliver batched input in order and probe support only once', async () => {
+  const target = await host(); const client = new EngineClient(target.invitation);
+  try {
+    await client.inputs([{ type: 'key', code: 'KeyA', down: true }, { type: 'key', code: 'KeyA', down: false }]);
+    await client.inputs([{ type: 'releaseAll' }]);
+    assert.equal(target.requests, 4);
+    assert.deepEqual(target.events, [{ type: 'key', code: 'KeyA', down: true }, { type: 'key', code: 'KeyA', down: false }, { type: 'releaseAll' }]);
+  } finally { client.close(); target.close(); }
+});
+
 test('incorrect host certificate and bearer token are rejected', async () => {
   const wrongHost = await host(true);
   const wrongIdentity = new EngineClient(wrongHost.invitation);

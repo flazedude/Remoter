@@ -111,3 +111,27 @@ func TestStreamRejectsUnauthenticatedAndInvalidConfiguration(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestInputBatchIsValidatedBeforePressingKeys(t *testing.T) {
+	h, _ := NewHandler(Config{Token: testToken, Synthetic: true, AllowInput: true})
+	defer h.Close()
+	invalid := `{"events":[{"type":"key","code":"KeyA","down":true},{"type":"key","code":"Invalid"}]}`
+	if got := request(h, "POST", "/v1/inputs", invalid, testToken).Code; got != 400 {
+		t.Fatal(got)
+	}
+	if len(h.held) != 0 {
+		t.Fatal("invalid batch left a key pressed")
+	}
+	valid := `{"events":[{"type":"key","code":"KeyA","down":true},{"type":"key","code":"KeyA","down":false},{"type":"button","button":"left","down":true},{"type":"releaseAll"}]}`
+	if got := request(h, "POST", "/v1/inputs", valid, testToken).Code; got != 200 {
+		t.Fatal(got)
+	}
+	if len(h.held) != 0 {
+		t.Fatal("release did not clear held input")
+	}
+	for _, body := range []string{`{"events":[]}`, `{"events":[{"type":"releaseAll","unknown":true}]}`, `{"events":[{"type":"releaseAll"}]} {}`} {
+		if got := request(h, "POST", "/v1/inputs", body, testToken).Code; got != 400 {
+			t.Fatal(got)
+		}
+	}
+}

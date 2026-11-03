@@ -52,6 +52,7 @@ export class EngineClient {
   private readonly websockets = new Set<WebSocket>();
   private readonly outerAgents = new Set<http.Agent>();
   private closed = false;
+  private batchInput = true;
 
   constructor(invitation: Invitation, route: RouteSettings = { mode: 'direct' }) {
     this.invitation = validateInvitation(invitation);
@@ -132,6 +133,19 @@ export class EngineClient {
   async input(event: InputEvent): Promise<void> {
     validateInput(event);
     await this.request('POST', '/v1/input', Buffer.from(JSON.stringify(event)), 4096);
+  }
+
+  async inputs(events: InputEvent[]): Promise<void> {
+    if (!Array.isArray(events) || !events.length || events.length > 32) throw new Error('Invalid input batch.');
+    events.forEach(validateInput);
+    if (this.batchInput) {
+      try { await this.request('POST', '/v1/inputs', Buffer.from(JSON.stringify({ events })), 4096); return; }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== 'The host returned HTTP 404.') throw error;
+        this.batchInput = false;
+      }
+    }
+    for (const event of events) await this.input(event);
   }
 
   async pairLAN(): Promise<Invitation> {

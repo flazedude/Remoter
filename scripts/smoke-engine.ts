@@ -110,6 +110,7 @@ async function exercise(client: EngineClient): Promise<number> {
   } finally {
     await client.input({ type: 'releaseAll' });
   }
+  await client.inputs([{ type: 'key', code: 'KeyA', down: true }, { type: 'key', code: 'KeyA', down: false }, { type: 'releaseAll' }]);
   const abort = new AbortController();
   const stream = client.frames({ display: display.id, quality: 85, width: 1280, fps: 30 }, abort.signal);
   const started = performance.now();
