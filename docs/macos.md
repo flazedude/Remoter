@@ -65,7 +65,10 @@ Moving or rebuilding an unsigned app/helper may require approving access again.
 
 Clipboard and system audio **hosting**, launch on boot, and in-app updates
 remain Windows-only. The Mac controller can receive clipboard/audio when a
-Windows host permits them. Closing the Mac app stops sharing.
+Windows host permits them. Closing the Mac window during sharing or a controlling
+session hides it and keeps the session running. Click Remoter in the Dock to
+reopen it. **Stop sharing** ends hosting; **Remoter → Quit Remoter** ends all
+sessions and quits the app.
 
 ## Verification
 

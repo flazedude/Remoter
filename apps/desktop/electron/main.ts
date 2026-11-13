@@ -56,6 +56,7 @@ const startupPath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
 const ownsInstance = !app.isPackaged || app.requestSingleInstanceLock();
 if (!ownsInstance) app.quit();
 app.on('second-instance', () => { window?.show(); if (window?.isMinimized()) window.restore(); window?.focus(); });
+app.on('activate', () => { window?.show(); if (window?.isMinimized()) window.restore(); window?.focus(); });
 
 function registerStartup(enabled: boolean) {
   if (!startupSupported) throw new Error('Launch on boot is available in the Windows release.');
@@ -475,6 +476,13 @@ app.whenReady().then(async () => {
   const updateTitleBar = () => { if (process.platform === 'win32' && window && !window.isDestroyed()) window.setTitleBarOverlay({ color: nativeTheme.shouldUseDarkColors ? '#1e1f23' : '#ffffff', symbolColor: nativeTheme.shouldUseDarkColors ? '#eeeff2' : '#24272e' }); };
   nativeTheme.on('updated', updateTitleBar);
   window.on('closed', () => nativeTheme.removeListener('updated', updateTitleBar));
+  // Closing a Mac window must not tear down an active remote session. Keep
+  // its renderer alive too; the Dock's activate event restores the same window.
+  window.on('close', event => {
+    if (process.platform === 'darwin' && !quitting && !installation.active && (host || clients.size > 0)) {
+      event.preventDefault(); window?.hide();
+    }
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

@@ -91,6 +91,20 @@ try {
   await page.screenshot({ path: path.join(resultDir, 'desktop-discovery.png') });
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   invitation = await page.evaluate(async () => (await window.remoter!.startHost({ allowInput: true, allowAudio: true, allowClipboard: true, listen: '127.0.0.1:0', advertise: '' })).invitation);
+  if (process.platform === 'darwin') {
+    const incoming = new EngineClient(parseInvitation(invitation));
+    try {
+      await application.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.close(); });
+      assert.equal(await application.evaluate(({ BrowserWindow }) => {
+        const windows = BrowserWindow.getAllWindows();
+        return windows.length === 1 && !windows[0].isVisible() && !windows[0].isDestroyed();
+      }), true, 'Closing the sharing window must hide it without quitting');
+      assert.ok((await incoming.frame()).length > 1024, 'Incoming clients must still receive frames after closing the host window');
+      await application.evaluate(({ app }) => { app.emit('activate'); });
+      assert.equal(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true, 'Dock activation must restore the sharing window');
+      assert.equal((await page.evaluate(() => window.remoter!.getState())).hostInvitation, invitation, 'Reopening must preserve the sharing identity');
+    } finally { incoming.close(); }
+  }
   await application.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('remoter:getUpdates');
     ipcMain.handle('remoter:getUpdates', () => ({ currentVersion: 'test', availableVersion: 'test-next', phase: 'ready', message: 'Synthetic ready state; no executable is provided.' }));
@@ -315,7 +329,11 @@ try {
     stored.updateResume = data.resume;
     return (await safeStorage.encryptStringAsync(JSON.stringify(stored))).toString('base64');
   }, { disk, resume: { version: pkg.version, createdAt: Date.now(), host: { ...hostOptions, listen: new URL(updateHost.endpoint).host }, lanToken: lanInvitation.token, deviceId: updateDevice.id } });
+  const quittingHost = new EngineClient(updateHost);
+  await quittingHost.info();
   await application.close(); application = undefined;
+  try { await assert.rejects(quittingHost.info(), 'Explicitly quitting must stop sharing'); }
+  finally { quittingHost.close(); }
   await writeFile(stateFile, Buffer.from(handoff, 'base64'));
   application = await electron.launch({ executablePath, args: ['.', '--updated'], cwd: process.cwd(), env: env as Record<string, string> });
   page = await application.firstWindow();
