@@ -113,7 +113,14 @@ static unsigned char *remoter_capture_display(CGDirectDisplayID displayID, int w
                 }
             }];
             // Late completion blocks retain screen safely after a timeout.
-            dispatch_semaphore_wait(screen->ready, dispatch_time(DISPATCH_TIME_NOW, 10LL*NSEC_PER_SEC));
+            if (dispatch_semaphore_wait(screen->ready, dispatch_time(DISPATCH_TIME_NOW, 10LL*NSEC_PER_SEC)) != 0) {
+                // A startup which never delivered its first frame must not stay
+                // cached forever while each retry refreshes its idle timer.
+                // Late completion blocks see cancelled and release screen safely.
+                remoter_stop_screen();
+                pthread_mutex_unlock(&remoter_stream_lock);
+                return NULL;
+            }
         }
         RemoterScreen *screen = remoter_screen;
         pthread_mutex_lock(&screen->lock);

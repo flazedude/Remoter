@@ -2,6 +2,7 @@ import { _electron as electron, type ElectronApplication } from 'playwright';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { EngineClient, parseInvitation, pairLANHost } from '../packages/engine/src/index.js';
 import type { RemoterAPI } from '../apps/desktop/src/types.js';
 import { electronPath } from './electron-path.js';
@@ -147,6 +148,20 @@ try {
   assert.equal(await remoteScreen.evaluate(element => getComputedStyle(element).cursor), 'default');
   await page.waitForFunction(() => Number(document.querySelector('.capture-cadence')?.textContent?.match(/^(\d+) FPS/)?.[1]) >= 27, undefined, { timeout: 20000 });
   const cadence = await page.locator('.capture-cadence').innerText();
+  if (process.platform === 'darwin') {
+    const parentPID = await application.evaluate(() => process.pid);
+    const hostPIDs = execFileSync('pgrep', ['-P', String(parentPID), '-f', 'remoter-host'], { encoding: 'utf8' }).trim().split(/\s+/).map(Number);
+    assert.equal(hostPIDs.length, 1, 'Expected one isolated synthetic host');
+    process.kill(hostPIDs[0], 'SIGSTOP');
+    try {
+      try { await page.getByText('Screen frame timed out.', { exact: true }).waitFor({ timeout: 10000 }); }
+      catch (error) { console.error('Stalled viewer state:', await page.locator('.capture-error').innerText()); throw error; }
+      assert.equal((await page.evaluate(() => window.remoter!.getState())).hostRunning, true, 'A stalled stream must not stop sharing');
+      assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1, 'A stalled stream must retain the selected control mode');
+    } finally { process.kill(hostPIDs[0], 'SIGCONT'); }
+    await page.waitForFunction(() => !document.querySelector('.capture-error'), undefined, { timeout: 20000 });
+    assert.equal(await page.getByRole('button', { name: 'Controlling', exact: true }).count(), 1, 'The viewer must reconnect automatically after the host resumes');
+  }
   await remoteScreen.evaluate(element => {
     for (let i = 0; i < 40; i++) {
       for (const type of ['keydown', 'keyup']) element.dispatchEvent(new KeyboardEvent(type, { code: 'KeyA', bubbles: true, cancelable: true }));

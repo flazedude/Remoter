@@ -42,3 +42,16 @@ test('slow renderer gets only latest frame, and close rejects a pending delivery
   await assert.rejects(pending, /closed/);
   release();
 });
+test('a stalled frame delivery times out and late frames cannot revive the failed stream', { timeout: 1000 }, async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  async function* source() { yield 1; await gate; yield 2; }
+  const receiver = new FrameReceiver(source());
+  try {
+    assert.equal(await receiver.read(), 1);
+    await assert.rejects(receiver.read(20), /Screen frame timed out/);
+    release();
+    await Promise.resolve();
+    await assert.rejects(receiver.read(), /Screen frame timed out/);
+  } finally { release(); receiver.close(); }
+});

@@ -160,7 +160,7 @@ export default function Session({ device, info, network, disconnecting, onDiscon
     }
     const watchdog = setInterval(() => {
       if (!config.current.paused && controlRef.current && performance.now() - lastFrame > 1000) {
-        setFrameError('Screen updates stalled. Waiting for fresh frames.'); setFps(0);
+        setFrameError(message => message || 'Screen updates stalled. Waiting for fresh frames.'); setFps(0);
       }
     }, 250);
     void poll();
